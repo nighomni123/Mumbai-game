@@ -13,6 +13,7 @@ import { setOutlineResolution } from '../engine/outline.js';
 import { buildStation } from './station.js';
 import { buildCity } from './city.js';
 import { buildProps } from './props.js';
+import { buildStationBuilding } from './building.js';
 import { buildLife } from './life.js';
 import { Player } from './player.js';
 import { game } from './bridge.js';
@@ -77,6 +78,7 @@ export function mount(container: HTMLElement): () => void {
   scene.add(buildStation());
   scene.add(buildCity());
   scene.add(buildProps());
+  scene.add(buildStationBuilding());
   const life = buildLife();
   scene.add(life.group);
 

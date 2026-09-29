@@ -34,15 +34,15 @@ export class Player {
   private pos = new THREE.Vector3();
   private vel = new THREE.Vector3();
   /**
-   * Looking DOWN the platform (+X, tilted slightly across the lines) rather
-   * than square across them. Looking across put a 57 m train broadside in the
-   * whole frame: it occluded every prop on the far platform, killed the depth
-   * bands, and left the near floor as dead space. Down the platform the
-   * canopy columns become a receding colonnade, the clutter reads at true
-   * size, and the local sits alongside instead of across.
+   * Standing on the carriageway looking at the station building. Both QA
+   * passes said the same thing: from the platform the frame has no subject —
+   * a canopy, a train and a corridor. The building facade with its bilingual
+   * fascia is the subject, and the carriageway is where a station is actually
+   * approached from. The platform, the local and the footbridge all sit
+   * behind and beside the camera, so this is the establishing shot.
    */
-  private yaw = -1.24;
-  private pitch = -0.16;
+  private yaw = 0.30;
+  private pitch = 0.06;
   private vy = 0;
   private grounded = true;
   private keys = new Set<string>();

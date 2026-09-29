@@ -22,7 +22,7 @@ export const L = {
    * footbridge closes the far end, and the carriageway is visible past the
    * train's tail.
    */
-  spawn: { x: -34, z: 0 },
+  spawn: { x: 0, z: -11 },
 
   // ---- island platform ---------------------------------------------------
   /** Platform is 4 m wide, centred on z = 0. */
