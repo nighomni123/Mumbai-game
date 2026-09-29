@@ -1,0 +1,22 @@
+# Local tooling / credentials — never commit
+.monid/
+.monid-xdg/
+.monid-config/
+.dsh-dump-config.txt
+
+# Dependencies / build output
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Caches / logs
+.vite/
+*.log
+npm-debug.log*
+.DS_Store

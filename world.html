@@ -1,0 +1,34 @@
+<!doctype html>
+<!--
+  Dev-only harness for the Mumbai world. Renders the district with no React
+  and no Convex so it can be inspected and screenshotted on its own.
+  Not part of the product build; see src/mumbai/preview.ts.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mumbai World — preview</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Noto+Sans+Devanagari:wght@600&family=Patrick+Hand&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #f0dcb4;
+        overflow: hidden;
+      }
+      #world {
+        position: fixed;
+        inset: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="world"></div>
+    <script type="module" src="/src/mumbai/preview.ts"></script>
+  </body>
+</html>
