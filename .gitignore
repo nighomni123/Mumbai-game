@@ -20,3 +20,6 @@ build/
 *.log
 npm-debug.log*
 .DS_Store
+
+# Generated geospatial tiles/chunks (rebuild with scripts/ingest-mumbai.mjs + enrich-chunks.mjs)
+data/build/
