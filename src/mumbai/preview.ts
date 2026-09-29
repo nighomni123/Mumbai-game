@@ -1,10 +1,9 @@
 /**
  * Dev-only preview harness.
  *
- * Mounts the world straight into the page with no React and no Convex, so the
- * 3D can be inspected and screenshotted without a configured backend or a
- * signed-in account. Served by Vite in dev at /world.html; it is not part of
- * the product build.
+ * Mounts the world straight into the page with no React and no router, so the
+ * 3D can be inspected and screenshotted in isolation. Served by Vite in dev
+ * at /world.html; it is not part of the product build.
  */
 import { mount } from "./index";
 import { game } from "./bridge";

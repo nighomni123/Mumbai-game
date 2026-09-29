@@ -115,7 +115,7 @@ export default function Landing() {
               how to play
             </a>
             <Button asChild variant="ghost" className="note text-base">
-              <Link to="/auth?returnTo=%2Fdashboard">sign in</Link>
+              <Link to="/dashboard">walk in</Link>
             </Button>
             <Button asChild className="note gap-1.5 text-base ink-shadow">
               <Link to="/dashboard">
@@ -178,7 +178,7 @@ export default function Landing() {
                 variant="outline"
                 className="note gap-2 text-lg"
               >
-                <Link to="/auth?returnTo=%2Fdashboard">
+                <Link to="/dashboard">
                   <PenLine className="size-4" />
                   I have an account
                 </Link>
@@ -400,7 +400,7 @@ export default function Landing() {
                 variant="outline"
                 className="note text-lg"
               >
-                <Link to="/auth?returnTo=%2Fdashboard">create my notebook</Link>
+                <Link to="/dashboard">walk the platform</Link>
               </Button>
             </div>
           </div>
@@ -415,7 +415,7 @@ export default function Landing() {
           </p>
           <p className="note text-sm text-muted-foreground/80">
             — western line · charni road ·{" "}
-            <Link to="/auth?returnTo=%2Fdashboard" className="underline decoration-dotted underline-offset-4 hover:text-foreground">
+            <Link to="/dashboard" className="underline decoration-dotted underline-offset-4 hover:text-foreground">
               sign in
             </Link>
           </p>

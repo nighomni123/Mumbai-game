@@ -26,15 +26,7 @@ function Card({ className = "", children }: { className?: string; children: Reac
  * never re-renders React. The hand-drawn utility classes all predate this
  * world and are reused unchanged.
  */
-export function Hud({
-  userName,
-  onHome,
-  onSignOut,
-}: {
-  userName?: string;
-  onHome: () => void;
-  onSignOut: () => void;
-}) {
+export function Hud() {
   const [playing, setPlaying] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const [fps, setFps] = useState(0);
@@ -95,11 +87,6 @@ export function Hud({
               {fps} fps
             </span>
           </div>
-          {userName ? (
-            <p className="hand mt-1 text-base leading-none text-muted-foreground">
-              walking as {userName}
-            </p>
-          ) : null}
         </Card>
       </div>
 
@@ -201,7 +188,7 @@ export function Hud({
               className="ruled index-card sketch w-full max-w-xl px-6 py-7 sm:px-10 sm:py-9"
             >
               <p className="hand text-xl leading-none text-primary">
-                {userName ? `hey ${userName}, ` : "psst, "}the platform is ready —
+                the platform is ready —
               </p>
               <h1 className="display mt-1 text-4xl leading-none text-foreground sm:text-5xl">
                 {HOME_STATION.deva}
@@ -270,20 +257,6 @@ export function Hud({
                   className="note cursor-pointer inline-flex items-center gap-2 rounded-md bg-primary px-7 py-3 text-lg text-primary-foreground transition-transform hover:-translate-y-0.5 active:translate-y-0"
                 >
                   ✏️ click to walk
-                </button>
-                <button
-                  type="button"
-                  onClick={onHome}
-                  className="note cursor-pointer rounded-md border border-foreground/40 bg-card px-4 py-2.5 text-base text-foreground transition-transform hover:-translate-y-0.5"
-                >
-                  ← back to the cover
-                </button>
-                <button
-                  type="button"
-                  onClick={onSignOut}
-                  className="note cursor-pointer rounded-md px-3 py-2.5 text-base text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground"
-                >
-                  sign out
                 </button>
               </div>
             </motion.div>
