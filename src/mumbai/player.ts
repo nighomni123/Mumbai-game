@@ -19,6 +19,10 @@ const JUMP = 5.0;
 const EYE = 1.70;
 const CAM_DIST = 4.0;
 const SENS = 0.0022;
+/** Creative flight speed, m/s — the same for every direction, as in Minecraft. */
+const FLY = 12;
+/** Two taps of space this close together is a toggle, not a double jump. */
+const DOUBLE_TAP = 280;
 
 /** Boxes the player cannot walk through, in world space. */
 interface Box2 {
@@ -45,6 +49,9 @@ export class Player {
   private pitch = 0.06;
   private vy = 0;
   private grounded = true;
+  /** Creative flight engaged: the engine flies, gravity and colliders are off. */
+  private fly = false;
+  private lastTap = 0;
   private keys = new Set<string>();
   private dragging = false;
   private hadLock = false;
@@ -101,6 +108,21 @@ export class Player {
     }
   };
 
+  /**
+   * Admin power. On: gravity off, colliders off, WASD flies along the view
+   * vector, space climbs and shift descends. Off: the walk loop resumes and
+   * the player is left falling rather than snapping, so toggling off mid-air
+   * drops you the way it should.
+   */
+  setFly = (on: boolean) => {
+    if (on === this.fly) return;
+    this.fly = on;
+    this.vel.set(0, 0, 0);
+    this.vy = 0;
+    this.grounded = on;
+    game.fly = on;
+  };
+
   attach() {
     const el = this.dom;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -108,6 +130,17 @@ export class Player {
         game.playing = false;
         if (document.pointerLockElement === el) document.exitPointerLock();
         return;
+      }
+      // Double-tap space is Minecraft's flight toggle; `repeat` guards against
+      // a held space key re-arming it forever.
+      if (e.code === 'Space' && !e.repeat) {
+        const t = performance.now();
+        if (t - this.lastTap < DOUBLE_TAP) {
+          this.lastTap = 0;
+          this.setFly(!this.fly);
+          return;
+        }
+        this.lastTap = t;
       }
       this.keys.add(e.code);
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code) && game.playing) {
@@ -134,7 +167,10 @@ export class Player {
       if (now - this.lastLook < 8) return;
       this.lastLook = now;
       this.yaw -= mx * SENS;
-      this.pitch = THREE.MathUtils.clamp(this.pitch + my * SENS, -0.45, 0.9);
+      // On the ground the pitch is kept shallow so the frame stays a street
+      // shot; in flight you get Minecraft's near-vertical look.
+      const lim = this.fly ? 1.5 : 0.9;
+      this.pitch = THREE.MathUtils.clamp(this.pitch + my * SENS, this.fly ? -lim : -0.45, lim);
     };
     const onMove = (e: MouseEvent) => {
       if (document.pointerLockElement === el || this.dragging) look(e.movementX, e.movementY);
@@ -161,7 +197,9 @@ export class Player {
       el.removeEventListener('mousedown', onDown);
       window.removeEventListener('mouseup', onUp);
       game.start = null;
+      game.setFly = null;
       game.playing = false;
+      game.fly = false;
     };
   }
 
@@ -190,34 +228,58 @@ export class Player {
 
     const sin = Math.sin(this.yaw);
     const cos = Math.cos(this.yaw);
-    const dir = new THREE.Vector3(-sin * fwd + cos * str, 0, -cos * fwd - sin * str);
-    if (dir.lengthSq() > 1e-6) dir.normalize();
-
     const running = k.has('ShiftLeft') || k.has('ShiftRight');
-    const target = game.playing ? (dir.lengthSq() > 1e-6 ? (running ? RUN : WALK) : 0) : 0;
-    this.vel.lerp(dir.multiplyScalar(target), 1 - Math.exp(-11 * dt));
+    const live = game.playing;
+    let ground = 0;
+    let speed = 0;
 
-    this.pos.x = THREE.MathUtils.clamp(this.pos.x + this.vel.x * dt, -L.halfX - 20, L.halfX + 20);
-    this.pos.z = THREE.MathUtils.clamp(this.pos.z + this.vel.z * dt, L.road[0] - 4, L.buildingFar + 8);
-    this.resolve(this.pos);
-
-    // ground height: the island platform, everything else at rail level
-    const ground = onPlatform(this.pos.x, this.pos.z) ? L.platformH : 0;
-    if (game.playing && this.grounded && k.has('Space') && ground > 0) {
-      this.vy = JUMP;
-      this.grounded = false;
-    }
-    if (!this.grounded || this.pos.y > ground + 0.001) {
-      this.vy -= GRAVITY * dt;
-      this.pos.y += this.vy * dt;
-      if (this.pos.y <= ground) {
-        this.pos.y = ground;
-        this.vy = 0;
-        this.grounded = true;
+    if (this.fly) {
+      // Minecraft creative, exactly: WASD flies along the view vector so
+      // looking down takes you down, strafe stays level, space climbs and
+      // shift descends. No gravity, no colliders, no district clamps — that
+      // is the whole point of the power.
+      const cp = Math.cos(this.pitch);
+      const lift = (k.has('Space') ? 1 : 0) - (running ? 1 : 0);
+      const dir = new THREE.Vector3(
+        -sin * cp * fwd + cos * str,
+        -Math.sin(this.pitch) * fwd + lift,
+        -cos * cp * fwd - sin * str,
+      );
+      if (dir.lengthSq() > 1e-6) {
+        dir.normalize();
+        speed = live ? FLY : 0;
+        this.pos.addScaledVector(dir, speed * dt);
       }
     } else {
-      this.pos.y = ground;
-      this.grounded = true;
+      const dir = new THREE.Vector3(-sin * fwd + cos * str, 0, -cos * fwd - sin * str);
+      if (dir.lengthSq() > 1e-6) dir.normalize();
+
+      const target = live ? (dir.lengthSq() > 1e-6 ? (running ? RUN : WALK) : 0) : 0;
+      this.vel.lerp(dir.multiplyScalar(target), 1 - Math.exp(-11 * dt));
+
+      this.pos.x = THREE.MathUtils.clamp(this.pos.x + this.vel.x * dt, -L.halfX - 20, L.halfX + 20);
+      this.pos.z = THREE.MathUtils.clamp(this.pos.z + this.vel.z * dt, L.road[0] - 4, L.buildingFar + 8);
+      this.resolve(this.pos);
+
+      // ground height: the island platform, everything else at rail level
+      ground = onPlatform(this.pos.x, this.pos.z) ? L.platformH : 0;
+      if (live && this.grounded && k.has('Space') && ground > 0) {
+        this.vy = JUMP;
+        this.grounded = false;
+      }
+      if (!this.grounded || this.pos.y > ground + 0.001) {
+        this.vy -= GRAVITY * dt;
+        this.pos.y += this.vy * dt;
+        if (this.pos.y <= ground) {
+          this.pos.y = ground;
+          this.vy = 0;
+          this.grounded = true;
+        }
+      } else {
+        this.pos.y = ground;
+        this.grounded = true;
+      }
+      speed = Math.hypot(this.vel.x, this.vel.z);
     }
 
     // camera
@@ -228,7 +290,9 @@ export class Player {
       this.pos.y + EYE + Math.sin(this.pitch) * CAM_DIST,
       this.pos.z + Math.cos(this.yaw) * cp * CAM_DIST,
     );
-    if (cam.position.y < ground + 0.6) cam.position.y = ground + 0.6;
+    // the floor clamp belongs to walking; in flight it would trap you against
+    // the ground the moment you dropped below it
+    if (!this.fly && cam.position.y < ground + 0.6) cam.position.y = ground + 0.6;
     cam.lookAt(this.pos.x, this.pos.y + EYE - 0.15, this.pos.z);
 
     this.object.position.copy(this.pos);
@@ -238,7 +302,7 @@ export class Player {
     game.y = this.pos.y;
     game.z = this.pos.z;
     game.heading = this.yaw;
-    game.speed = Math.hypot(this.vel.x, this.vel.z);
+    game.speed = speed;
     game.onPlatform = onPlatform(this.pos.x, this.pos.z);
   }
 }

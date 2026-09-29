@@ -31,17 +31,23 @@ export function Hud() {
   const [toast, setToast] = useState<Toast | null>(null);
   const [fps, setFps] = useState(0);
   const [where, setWhere] = useState("platform");
+  const [fly, setFly] = useState(false);
   const lastToast = useRef(0);
   const lastFps = useRef(0);
 
   useEffect(() => {
     let raf = 0;
     let wasPlaying = false;
+    let wasFly = false;
     const tick = () => {
       raf = requestAnimationFrame(tick);
       if (game.playing !== wasPlaying) {
         wasPlaying = game.playing;
         setPlaying(game.playing);
+      }
+      if (game.fly !== wasFly) {
+        wasFly = game.fly;
+        setFly(game.fly);
       }
       if (game.toast && game.toast.id !== lastToast.current) {
         lastToast.current = game.toast.id;
@@ -151,6 +157,25 @@ export function Hud() {
           </ol>
         </Card>
       </div>
+
+      {/* ------------------------------------------------ admin power */}
+      {/* Deliberately outside `dim`: the switch has to stay live and clickable
+          while walking, which is exactly when you want it. */}
+      <button
+        type="button"
+        aria-pressed={fly}
+        onClick={() => game.setFly?.(!fly)}
+        title="Minecraft-creative flight — or double-tap space in the world"
+        className="pointer-events-auto absolute bottom-3 right-3 flex cursor-pointer items-center gap-2.5 rounded-md border border-foreground/40 bg-card/92 px-3 py-2 backdrop-blur-[2px] transition-transform hover:-translate-y-0.5 active:translate-y-0 sm:bottom-5 sm:right-5"
+      >
+        <span className={`check-box ${fly ? "" : "opacity-30"}`}>{fly ? "✓" : ""}</span>
+        <span className="text-left leading-none">
+          <span className="hand block text-[17px] text-foreground">admin power</span>
+          <span className="note block text-[13px] text-muted-foreground">
+            {fly ? "flying · no gravity" : "grounded · space to jump"}
+          </span>
+        </span>
+      </button>
 
       {/* ------------------------------------------------ station toast */}
       <AnimatePresence>

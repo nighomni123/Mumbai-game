@@ -18,6 +18,13 @@ export const game = {
   playing: false,
   /** Called by the HUD to start a session; requests pointer lock. */
   start: null as null | (() => void),
+  /**
+   * Creative flight is on: no gravity, no collision, space climbs and shift
+   * descends, Minecraft-style. Written by the engine, toggled by the HUD.
+   */
+  fly: false,
+  /** Called by the HUD's admin-power switch to engage or drop flight. */
+  setFly: null as null | ((on: boolean) => void),
   /** Live player transform, written every frame by the engine. */
   x: 0,
   y: 0,

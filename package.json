@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "preview": "vite preview",
-    "check:stations": "node scripts/check-stations.mjs"
+    "check:stations": "node scripts/check-stations.mjs",
+    "check:fly": "bun scripts/check-fly.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",

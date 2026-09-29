@@ -85,6 +85,7 @@ export function mount(container: HTMLElement): () => void {
   const player = new Player(camera, canvas);
   const detach = player.attach();
   game.start = player.start;
+  game.setFly = player.setFly;
 
   /* ---- post pipeline ---- */
   const pipeline = new Pipeline(renderer, scene, camera, { pixelBudget: 3.2e6 });
