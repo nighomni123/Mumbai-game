@@ -117,8 +117,8 @@ Canonical install: `.tools/ponytail` (update with `git pull`; source of the six 
 **`README.md` is the source of truth for product conventions.** It already
 documents the stack, the `@/...` import aliases, shadcn/ui usage, Tailwind v4
 oklch tokens in `src/index.css`, the "no nested cards / no shadows / use toasts"
-rules, Framer Motion expectations, Convex schema rules, and the mobile
-responsiveness bar. Read it and follow it. Do **not** copy or paraphrase it
+rules, Framer Motion expectations, and the mobile responsiveness bar. (Its
+Convex/Auth sections are historical — that backend was removed; ignore them.) Read it and follow it. Do **not** copy or paraphrase it
 here — two copies drift, and a stale one is worse than none.
 
 What follows is only what the README does not tell you.
@@ -159,27 +159,25 @@ What follows is only what the README does not tell you.
   with zero binary assets; adding a procedural texture is almost always cheaper
   than shipping a PNG.
 - **`world.html` is a dev-only harness** that mounts the world with no React and
-  no Convex, so the 3D can be inspected and screenshotted without a configured
-  backend or a signed-in account (`npx vite`, then `/world.html`). It is not
-  part of the product build. It forces `game.playing = true` so input works
-  without pointer lock.
+  no router, so the 3D can be inspected and screenshotted in isolation
+  (`npx vite`, then `/world.html`). It is not part of the product build. It
+  forces `game.playing = true` so input works without pointer lock.
 - **`bun run check:stations`** is the one runnable check: it asserts the station
   list is in true Western Railway order, codes are unique and correct, chainages
   increase, and the Devanagari fields really contain Devanagari. Run it after
   touching `stations.ts`. It parses the TS by regex — no TS runtime, no deps.
 - Only dependency left for 3D is `three` itself.
 
-### Convex auth is off-limits
-- **DO NOT MODIFY** `src/convex/auth/emailOtp.ts`,
-  `src/convex/auth.config.ts`, or `src/convex/auth.ts`.
-- Get the user via `useAuth()` from `@/hooks/use-auth` — never roll your own.
-- For a protected route use `RequireAuth` with `title` and `description` (see
-  `src/components/RequireAuth.tsx`). Do not hand-roll a redirect to `/auth`;
-  `RequireAuth` carries a validated `returnTo` back to the page the user asked
-  for.
-- Routes live in `src/main.tsx` (`/`, `/auth`, `/dashboard`, `*`). The main
-  authenticated experience is `/dashboard`; `redirectAfterAuth` in `main.tsx`
-  points there.
+### No backend — the world is the whole product
+- **The Convex backend and the whole auth flow were removed on 2026-09-29**
+  (`a72552c`). `/dashboard` is public. There is no `ConvexAuthProvider`, no
+  `useAuth`, no `RequireAuth`, and no `VITE_CONVEX_URL`. If a future task needs
+  persistence or accounts, that is a fresh decision — do not reintroduce Convex
+  by reflex or assume the wiring still exists.
+- The 3D world is entirely client-side: it needs no backend, no key, and no
+  network. Keep it that way where you can — that is what makes it trivially
+  deployable and screenshot-able.
+- Routes live in `src/main.tsx`: `/` (landing) and `/dashboard` (the world).
 
 ### The Mumbai world is EXPLICIT, not SOURCED — this is settled, don't relitigate
 
