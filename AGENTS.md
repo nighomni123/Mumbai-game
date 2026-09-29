@@ -179,7 +179,12 @@ What follows is only what the README does not tell you.
   deployable and screenshot-able.
 - Routes live in `src/main.tsx`: `/` (landing) and `/dashboard` (the world).
 
-### The Mumbai world is EXPLICIT, not SOURCED — this is settled, don't relitigate
+### Two worlds: `src/mumbai/` (authored station) and `src/geo/` (data-sourced city)
+`src/mumbai/` is the hand-authored Charni Road station (ordered station list,
+signage, livery, crowd). `src/geo/` is the NEW geographically-grounded Greater
+Mumbai city built from real data. Both ship; they are different products and
+should not be conflated. The notes below that say "explicit in source, not
+data-sourced" apply ONLY to `src/mumbai/`.
 
 The world is geometry plus content written out **literally in the source**, not
 derived from a downloaded geographic dataset. It is **not** claiming to be
@@ -199,17 +204,26 @@ which is exactly why the result needs no licence, no key, and no pipeline.
 Do not describe this build, or ours, as "hand-authored"; say "explicit in
 source, not data-sourced".
 
-**What was verified:** all 10 of its JS chunks total 1.0 MB with only two URLs
-in the entire codebase (an XML namespace and a cel-shading paper citation), no
-`fetch`/asset loads, and a live Chromium network trace showing 64 requests
-whose only non-asset entries are Cloudflare's own analytics beacon. Its Mumbai
-chunk is **7.5 KB**. The "lifelike" quality comes from recalled cultural
-specificity, not from accuracy. Chasing real
-footprints/DEM/height data was investigated and abandoned: OSM carries `height`
-on ~0.6% of Mumbai buildings (28 of 4,454 in a 4.4 km box), Microsoft's Global
-ML Building Footprints now returns `409 Public access is not permitted`, and
-Google Open Buildings' original bucket is gone. The one real source
-(Open Buildings 2.5D, 4 m height rasters) is Earth-Engine-gated.
+**What was verified about the reference:** all 10 of its JS chunks total 1.0 MB
+with only two URLs in the entire codebase (an XML namespace and a cel-shading
+paper citation), no `fetch`/asset loads, and a live Chromium network trace
+showing 64 requests whose only non-asset entries are Cloudflare's own analytics
+beacon. Its Mumbai chunk is **7.5 KB**.
+
+**SUPERSEDED 2026-09-29 — this section is now history.** The world is
+**data-sourced**, built on real Greater Mumbai geography, not authored. Two of
+the claims above are now known to be wrong:
+- **Open Buildings 2.5D Temporal is NOT Earth-Engine-gated.** The bucket
+  `open-buildings-temporal-data` is public-read; verified directly with
+  anonymous HTTP (manifest 200, Mumbai geotiff 206). It is the best available
+  height source and is the next stage to wire in.
+- **Overture is not a height source for Mumbai**: 2.59% coverage, 2.3 m median.
+  It is a ~3x *footprint* fallback only.
+MCGM's authoritative layer is still genuinely token-gated (499), so heights are
+currently **estimated** by the documented rule in `scripts/enrich-chunks.mjs`
+(zone prior + damped NON-MONOTONIC area term — in Mumbai a bigger footprint
+means a *shorter* building). See `docs/height-sources.md` and
+`scripts/validate-geo.mjs`.
 
 **The mechanism, in priority order — this is the actual spec:**
 1. **Real ordered place data, written out as literals.** A station list in correct
@@ -259,12 +273,21 @@ creating a new product from it, copying the content, and mass-downloading, on
 three separate counts. Sentinel-2 is the open-licence fallback if real imagery
 is ever genuinely needed (10 m/px — fine for ground tint, useless for facades).
 
-### Data licensing — OSM is ODbL, and it lands on the FILE not the app
-The world is **explicit in source, not data-sourced** (see the section above),
-so it should carry **no** ODbL obligation at all. That is the default and the
-goal — keep it that way. This section is only in force **if** someone
-reintroduces real geographic data, which is a decision to raise, not to make
-silently.
+### Data licensing — OSM/ODbL is NOW LIVE (the `src/geo/` city ships OSM-derived data)
+**This obligation is real, not hypothetical.** `src/geo/` ingests from
+Mumbai_WFL1, which is **OSM-derived**, and the stored chunks are a Derivative
+Database. The short version of the rule already established below:
+
+- The **renderer/app code** is a Produced Work — licence it however you like.
+- The **chunk data files** must be offered under ODbL. The cheapest compliant
+  route, and the one already taken, is: commit `scripts/ingest-mumbai.mjs`
+  (the "means of creating" the Derivative Database) and publish the ODbL notice
+  alongside the data rather than shipping an opaque blob.
+- Attribution belongs **in the data or metadata**, not only in the app UI.
+
+`src/mumbai/` (authored) still carries no ODbL obligation. Do not apply one
+rule to both worlds. If `data/build/` is ever committed rather than
+regenerated, add the © OpenStreetMap contributors notice to it.
 
 If any OSM-derived data does end up in the repo, OSM is **ODbL 1.0** and the
 share-alike obligation attaches to the **data file**, never to the application
@@ -298,6 +321,28 @@ So when adding geo data:
 Note OSMF's own caveat: its guidance is "not a comprehensive list" and is
 explicitly not legal advice. If this ever becomes commercial, get a lawyer to
 confirm rather than relying on this note.
+
+### The geographic city (`src/geo/`) — pipeline and rules
+- `scripts/geo.mjs` — projection + tiling, shared with the render side by
+  `src/geo/geo-constants.ts`. **The two MUST stay in sync** (same ORIGIN, same
+  TILE_M, same METRO_BOUNDS) or every building lands in the wrong place.
+- `scripts/ingest-mumbai.mjs` — paged, concurrent, resumable, retrying ingest
+  from the public Mumbai_WFL1 FeatureServer. MCGM's own layer is token-gated
+  (499) and is not ingestible; source_priority 1 is reserved for it.
+- `scripts/enrich-chunks.mjs` — dedupes tile-straddling buildings (centroid
+  owner), classifies facades, assigns heights, projects to local metres.
+- `scripts/validate-geo.mjs` — **the geographic gate. Run it before touching
+  visual styling.** 36 ground-truth sites across all 24 required areas.
+- `scripts/validation-sites.mjs` — those 36 sites, measured against the same
+  source the pipeline ingests.
+- `docs/height-sources.md` — the height research, including the two findings
+  that overturned earlier decisions.
+- `geo.html` / `src/geo/preview.ts` — dev harness in CREATIVE free-fly mode,
+  with `__geo.teleport('<place>')` for 27 real locations. Use it to inspect
+  the city; do not fight an orbit camera.
+- Height is currently **estimated** (`height_source: "estimated"`, confidence
+  capped at 0.45). The measured source is Open Buildings 2.5D, which is
+  anonymously readable and is the next thing to wire in.
 
 ### The hand-drawn theme already exists
 - Custom utility classes are defined in `src/index.css` and are the intended
