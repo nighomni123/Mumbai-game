@@ -225,33 +225,32 @@ export function numberTexture(n: string) {
  * Painted coach side — the WR red/cream livery with window band, drawn
  * once and tiled along the train so the body carries real detail.
  * ------------------------------------------------------------------ */
+/**
+ * Coach side livery. The windows and doors are GEOMETRY now (see
+ * `buildTrain`), so this texture is just the paint: a cream upper body over
+ * a red lower body, a dark waist rail line, a darker roof edge, and grime
+ * toward the skirt. No window band is baked here.
+ */
 export function coachTexture(red: string, cream: string, stripe: string) {
-  const { c, ctx } = canvas2d(1024, 256);
+  const { c, ctx } = canvas2d(512, 128);
   const tex = finish(c, 1, 1);
   const draw = () => {
-    // lower body
+    // lower body (red)
     ctx.fillStyle = red;
-    ctx.fillRect(0, 0, 1024, 256);
-    // upper body
+    ctx.fillRect(0, 0, 512, 128);
+    // upper body (cream) — a little over half
     ctx.fillStyle = cream;
-    ctx.fillRect(0, 86, 1024, 170);
-    // waistline stripe
+    ctx.fillRect(0, 0, 512, 62);
+    // waist rail line
     ctx.fillStyle = stripe;
-    ctx.fillRect(0, 168, 1024, 14);
-    // window band
-    ctx.fillStyle = '#33405a';
-    for (let x = 40; x < 1000; x += 150) ctx.fillRect(x, 106, 108, 54);
-    // window frames
-    ctx.strokeStyle = 'rgba(240,235,220,0.55)';
-    ctx.lineWidth = 3;
-    for (let x = 40; x < 1000; x += 150) ctx.strokeRect(x, 106, 108, 54);
-    // roof shading
-    ctx.fillStyle = 'rgba(0,0,0,0.10)';
-    ctx.fillRect(0, 86, 1024, 10);
-    // dirt / wear toward the bottom
-    ctx.fillStyle = 'rgba(30,20,16,0.18)';
-    for (let i = 0; i < 320; i++) {
-      ctx.fillRect(Math.random() * 1024, 200 + Math.random() * 56, 2, 2);
+    ctx.fillRect(0, 62, 512, 5);
+    // subtle horizontal shading at the very top (under the cant rail)
+    ctx.fillStyle = 'rgba(0,0,0,0.08)';
+    ctx.fillRect(0, 0, 512, 5);
+    // grime toward the skirt
+    ctx.fillStyle = 'rgba(30,20,16,0.16)';
+    for (let i = 0; i < 260; i++) {
+      ctx.fillRect(Math.random() * 512, 100 + Math.random() * 28, 2, 2);
     }
   };
   draw();

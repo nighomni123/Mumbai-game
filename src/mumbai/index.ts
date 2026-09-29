@@ -115,8 +115,12 @@ export function mount(container: HTMLElement): () => void {
     const dt = Math.min((now - last) / 1000, 0.1);
     last = now;
 
-    player.update(dt);
     life.update(clock.getElapsedTime(), dt);
+    // The local is solid: feed its live AABB to the player so walking never
+    // carries the camera inside a coach, and the default spawn view never
+    // renders from inside the train.
+    player.setMoving(life.trainBox());
+    player.update(dt);
 
     // shadow camera follows the player so the map stays tight and crisp
     sun.position.set(game.x - 48, 44, game.z + 34);

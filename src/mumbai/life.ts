@@ -21,55 +21,152 @@ const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
 export function buildTrain(): THREE.Group {
   const g = new THREE.Group();
   const carLen = 19;
+  const halfZ = 1.35; // half coach width
   const bodyTex = coachTexture(hex(PAL.trainRed), hex(PAL.trainCream), hex(PAL.trainStripe));
   bodyTex.wrapS = THREE.RepeatWrapping;
-  bodyTex.repeat.set(2, 1);
 
   for (let c = 0; c < 3; c++) {
     const x = (c - 1) * (carLen + 0.6);
+
+    // the painted body shell — a plain box; windows/doors are separate
     const body = new THREE.Mesh(
-      new THREE.BoxGeometry(carLen, 2.9, 2.7),
+      new THREE.BoxGeometry(carLen, 2.9, halfZ * 2),
       cel({ map: bodyTex, bands: 3 }),
     );
     body.position.set(x, 1.95, 0);
     body.castShadow = true;
     g.add(body);
 
-    // roof
-    const roof = new THREE.Mesh(
-      new THREE.BoxGeometry(carLen - 0.4, 0.22, 2.6),
+    // A WR local's side has a regular rhythm: a pair of sliding doors roughly
+    // every third bay, with window bays between. Build that rhythm explicitly
+    // rather than dropping three arbitrary recesses — that is what made the
+    // previous version read as a billboard.
+    const bays = 7; // window/door bays across one coach
+    const pitch = carLen / bays;
+    for (let side of [-1, 1] as const) {
+      const zf = side * (halfZ + 0.02);
+      for (let b = 0; b < bays; b++) {
+        const bx = x - carLen / 2 + pitch * (b + 0.5);
+        // doors on bays 1 and 4 (leaving window bays between)
+        const isDoor = b === 1 || b === 4;
+        if (isDoor) {
+          // recessed double sliding door: a dark reveal + a centre split
+          const reveal = new THREE.Mesh(
+            new THREE.BoxGeometry(pitch * 0.52, 2.15, 0.06),
+            cel({ color: PAL.trainWindow, bands: 2 }),
+          );
+          reveal.position.set(bx, 1.72, zf);
+          g.add(reveal);
+          const split = new THREE.Mesh(
+            new THREE.BoxGeometry(0.05, 2.15, 0.09),
+            cel({ color: PAL.trainRoof, bands: 2 }),
+          );
+          split.position.set(bx, 1.72, zf + side * 0.02);
+          g.add(split);
+          // door threshold
+          const sill = new THREE.Mesh(
+            new THREE.BoxGeometry(pitch * 0.52, 0.1, 0.12),
+            cel({ color: PAL.trainRoof, bands: 2 }),
+          );
+          sill.position.set(bx, 0.66, zf);
+          g.add(sill);
+        } else {
+          // window bay: a framed opening
+          const win = new THREE.Mesh(
+            new THREE.BoxGeometry(pitch * 0.6, 0.9, 0.06),
+            cel({ color: PAL.trainWindow, bands: 2 }),
+          );
+          win.position.set(bx, 2.35, zf);
+          g.add(win);
+          // top light / frame above the window
+          const light = new THREE.Mesh(
+            new THREE.BoxGeometry(pitch * 0.6, 0.12, 0.05),
+            flat({ color: PAL.trainCream, toneMapped: false }),
+          );
+          light.position.set(bx, 2.9, zf + side * 0.01);
+          g.add(light);
+        }
+      }
+      // waist rail: a slim rub rail running the length of the coach
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(carLen - 0.6, 0.09, 0.07),
+        cel({ color: PAL.trainStripe, bands: 2 }),
+      );
+      rail.position.set(x, 2.98, zf + side * 0.01);
+      g.add(rail);
+    }
+
+    // cant rail / roof shoulder
+    const shoulder = new THREE.Mesh(
+      new THREE.BoxGeometry(carLen - 0.2, 0.16, halfZ * 2 + 0.06),
       cel({ color: PAL.trainRoof, bands: 2 }),
     );
-    roof.position.set(x, 3.5, 0);
+    shoulder.position.set(x, 3.4, 0);
+    g.add(shoulder);
+    // roof (slightly domed feel via a thinner slab on top)
+    const roof = new THREE.Mesh(
+      new THREE.BoxGeometry(carLen - 0.6, 0.16, halfZ * 2 - 0.1),
+      cel({ color: PAL.trainRoof, bands: 2 }),
+    );
+    roof.position.set(x, 3.52, 0);
     g.add(roof);
-
-    // doorway recess, so the side is not one flat band
-    for (const dx of [-5.5, 0, 5.5]) {
-      const door = new THREE.Mesh(
-        new THREE.BoxGeometry(1.5, 2.1, 0.08),
-        cel({ color: PAL.trainWindow, bands: 2 }),
+    // roof vents
+    for (const vx of [x - 4, x, x + 4]) {
+      const vent = new THREE.Mesh(
+        new THREE.BoxGeometry(0.9, 0.14, 0.5),
+        cel({ color: PAL.trainRoof, bands: 2 }),
       );
-      door.position.set(x + dx, 1.75, 1.38);
-      g.add(door);
+      vent.position.set(vx, 3.66, 0);
+      g.add(vent);
+    }
+
+    // underframe skirt so the coach doesn't sit flush on the ballast
+    const skirt = new THREE.Mesh(
+      new THREE.BoxGeometry(carLen - 0.3, 0.5, halfZ * 2 - 0.2),
+      cel({ color: 0x3a2f2a, bands: 2 }),
+    );
+    skirt.position.set(x, 0.42, 0);
+    g.add(skirt);
+    // battery boxes under the floor
+    for (const bx2 of [x - 3.5, x + 3.5]) {
+      const box = new THREE.Mesh(
+        new THREE.BoxGeometry(2.2, 0.45, 0.7),
+        cel({ color: 0x2f2723, bands: 2 }),
+      );
+      box.position.set(bx2, 0.35, 0);
+      g.add(box);
     }
 
     // bogies
     for (const bx of [x - 6, x + 6]) {
       const bogie = new THREE.Mesh(
-        new THREE.BoxGeometry(3.2, 0.7, 2.0),
+        new THREE.BoxGeometry(3.2, 0.6, 1.9),
         cel({ color: 0x2a2e34, bands: 2 }),
       );
-      bogie.position.set(bx, 0.62, 0);
+      bogie.position.set(bx, 0.5, 0);
       g.add(bogie);
     }
 
-    // coach number
-    const num = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.4, 0.4),
-      flat({ color: PAL.trainCream, toneMapped: false }),
-    );
-    num.position.set(x + 8, 0.75, 1.4);
-    g.add(num);
+    // gangway bellows between cars
+    if (c < 2) {
+      const bellows = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7, 2.0, 1.1),
+        cel({ color: 0x2a2a2e, bands: 2 }),
+      );
+      bellows.position.set(x + carLen / 2 + 0.3, 2.2, 0);
+      g.add(bellows);
+    }
+
+    // coach number, both sides
+    for (const side of [-1, 1]) {
+      const num = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.3, 0.36),
+        flat({ color: PAL.trainCream, toneMapped: false }),
+      );
+      num.position.set(x + 8, 0.9, side * (halfZ + 0.03));
+      num.rotation.y = side > 0 ? 0 : Math.PI;
+      g.add(num);
+    }
   }
   return g;
 }
@@ -276,6 +373,8 @@ export interface Life {
   /** The geometry group to add to the scene. */
   group: THREE.Group;
   update: (t: number, dt: number) => void;
+  /** Live world AABB of the local, for player collision. */
+  trainBox: () => { x0: number; x1: number; z0: number; z1: number; top: number };
 }
 
 export function buildLife(): Life {
@@ -380,8 +479,17 @@ export function buildLife(): Life {
     g.add(p);
   }
 
+  // half-length of the 3-car consist plus the gangways
+  const consistHalf = 3 * 19 * 0.5 + 19; // ~ carLen*2 total/2 + margin
   return {
     group: g,
+    trainBox: () => ({
+      x0: train.position.x - consistHalf,
+      x1: train.position.x + consistHalf,
+      z0: train.position.z - 1.5,
+      z1: train.position.z + 1.5,
+      top: 3.9, // roof height
+    }),
     update(t: number, dt: number) {
       // train: runs in, dwells, runs out, on a 46 s cycle
       const cycle = (t % 46) / 46;

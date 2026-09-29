@@ -40,6 +40,8 @@ const box = (w: number, h: number, d: number, color: number, extra = {}) =>
  * Ground: platform, footpaths, carriageway
  * ------------------------------------------------------------------ */
 function ground(g: THREE.Group) {
+  // seeded so the platform surface is byte-identical on every visit
+  const gr = rng(24680);
   const road = new THREE.Mesh(
     new THREE.PlaneGeometry(L.halfX * 2, L.road[0] - L.road[1]),
     cel({ color: PAL.road }),
@@ -70,15 +72,81 @@ function ground(g: THREE.Group) {
   plat.castShadow = true;
   g.add(plat);
 
-  // yellow safety line along both platform edges
+  // Surface interest along the platform. A bare cream slab is the single
+  // biggest "unfinished" tell in the frame, and every piece here is cheap:
+  // one instanced strip, one instanced litter field, a few painted lines.
+  const deck = L.platformH + 0.001;
+
+  // tactile warning strip (the dotted band) set in from the edge
   for (const s of [-1, 1]) {
-    const line = new THREE.Mesh(
-      new THREE.PlaneGeometry(L.platformLength, 0.6),
-      flat({ color: 0xd6b463, toneMapped: false }),
+    const strip = new THREE.Mesh(
+      new THREE.PlaneGeometry(L.platformLength, 0.45),
+      flat({ color: 0xc9a94f, toneMapped: false }),
     );
-    line.rotation.x = -Math.PI / 2;
-    line.position.set(0, L.platformH + 0.012, s * (L.platformZ - 0.35));
-    g.add(line);
+    strip.rotation.x = -Math.PI / 2;
+    strip.position.set(0, deck + 0.002, s * (L.platformZ - 0.85));
+    g.add(strip);
+    // raised dots, as one instanced mesh
+    const dots = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 0.03, 6),
+      flat({ color: 0xb9973f, toneMapped: false }),
+      Math.floor(L.platformLength / 0.35) * 2,
+    );
+    const dm = new THREE.Matrix4();
+    let di = 0;
+    for (let dx = -L.halfX; dx <= L.halfX; dx += 0.35) {
+      for (const off of [-0.12, 0.12]) {
+        dm.makeTranslation(dx, deck + 0.02, s * (L.platformZ - 0.85) + off);
+        dots.setMatrixAt(di++, dm);
+      }
+    }
+    dots.count = di;
+    dots.instanceMatrix.needsUpdate = true;
+    g.add(dots);
+
+    // drainage channel just behind the tactile strip
+    const drain = new THREE.Mesh(
+      new THREE.PlaneGeometry(L.platformLength, 0.16),
+      flat({ color: 0x8a7f6d, toneMapped: false }),
+    );
+    drain.rotation.x = -Math.PI / 2;
+    drain.position.set(0, deck + 0.001, s * (L.platformZ - 1.3));
+    g.add(drain);
+
+    // painted joint lines every 6 m, running across the platform
+    for (let dx = -L.halfX; dx <= L.halfX; dx += 6) {
+      const joint = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.08, L.platformZ * 2 - 0.2),
+        flat({ color: 0xb5a98f, toneMapped: false }),
+      );
+      joint.rotation.x = -Math.PI / 2;
+      joint.position.set(dx, deck, 0);
+      g.add(joint);
+    }
+
+    // scattered litter: tiny crushed bits, one instanced field
+    const litter = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(0.12, 0.04, 0.1),
+      flat({ color: 0x9a8f78, toneMapped: false }),
+      120,
+    );
+    const lm = new THREE.Matrix4();
+    const lc = new THREE.Color();
+    let li = 0;
+    for (let k = 0; k < 120; k++) {
+      lm.makeTranslation(
+        -L.halfX + gr() * L.halfX * 2,
+        deck + 0.02,
+        s * (gr() * (L.platformZ - 0.5)),
+      );
+      litter.setMatrixAt(li, lm);
+      lc.setHex(gr() > 0.5 ? 0x9a8f78 : 0x7d7360);
+      litter.setColorAt(li, lc);
+      li++;
+    }
+    litter.instanceMatrix.needsUpdate = true;
+    if (litter.instanceColor) litter.instanceColor.needsUpdate = true;
+    g.add(litter);
   }
 }
 

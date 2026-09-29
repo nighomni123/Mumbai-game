@@ -169,88 +169,248 @@ function windows(g: THREE.Group, w: number, h: number, d: number, y: number, cx:
 }
 
 /** Old chawl: long, low, deep balconies running the full frontage. */
-function chawl(g: THREE.Group, x: number, z: number, w: number, storeys: number) {
-  const h = storeys * 3;
-  const d = 11;
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    cel({ color: rnd() > 0.5 ? PAL.chawl : PAL.chawlAlt }),
-  );
-  body.position.set(x, h / 2, z);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
+/* ------------------------------------------------------------------ *
+ * Shared architectural detail. These are the pieces that stop a block
+ * reading as a tan box with decals stuck on: a plinth to lift the ground
+ * floor, a string course, a cornice, and a parapet with a coping. The
+ * three typologies below share this craft but not their proportions.
+ * ------------------------------------------------------------------ */
 
-  // the balcony is what makes a chawl a chawl
-  for (let s = 1; s <= storeys; s++) {
-    const deck = new THREE.Mesh(
-      new THREE.BoxGeometry(w, 0.16, 2.0),
-      cel({ color: PAL.concrete, bands: 2 }),
-    );
-    deck.position.set(x, s * 3 - 0.1, z + (d / 2 + 1) * (z > 0 ? 1 : -1));
-    deck.castShadow = true;
-    g.add(deck);
-    const rail = new THREE.Mesh(
-      new THREE.BoxGeometry(w, 0.9, 0.08),
-      cel({ color: PAL.balcony, bands: 2 }),
-    );
-    rail.position.set(x, s * 3 + 0.45, z + (d / 2 + 2) * (z > 0 ? 1 : -1));
-    g.add(rail);
-  }
-  windows(g, w, h, d, 0, x, z, PAL.chawlShade);
-  roofClutter(g, w, d, h, x, z, 0.8);
+/** Slightly value-shifted body colour so a street is never one flat tan. */
+function bodyTone(base: number) {
+  const c = new THREE.Color(base);
+  const k = 0.92 + rnd() * 0.16;
+  c.multiplyScalar(k);
+  const hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl);
+  c.setHSL((hsl.h + (rnd() - 0.5) * 0.03 + 1) % 1, Math.min(1, hsl.s * (0.85 + rnd() * 0.3)), hsl.l);
+  return c.getHex();
 }
 
-/** Mid-rise block with a ground-floor shopfront. */
-function midrise(g: THREE.Group, x: number, z: number, w: number, d: number, storeys: number, shop?: { deva: string; latin: string; bg: number; fg: number }) {
-  const h = storeys * 3.2;
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    cel({ color: rnd() > 0.5 ? PAL.midrise : PAL.concrete }),
+/** A plinth (shopfront-height base) that lifts the ground floor. */
+function plinth(g: THREE.Group, w: number, d: number, x: number, z: number, h = 3.2) {
+  const p = new THREE.Mesh(
+    new THREE.BoxGeometry(w + 0.5, h, d + 0.5),
+    cel({ color: bodyTone(PAL.concrete), bands: 2 }),
   );
-  body.position.set(x, h / 2, z);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
+  p.position.set(x, h / 2, z);
+  p.castShadow = true;
+  p.receiveShadow = true;
+  g.add(p);
+  return h;
+}
 
+/** A horizontal string course that cuts the facade. */
+function stringCourse(g: THREE.Group, w: number, d: number, x: number, y: number, z: number, t = 0.22) {
+  const c = new THREE.Mesh(
+    new THREE.BoxGeometry(w + 0.35, t, d + 0.35),
+    cel({ color: PAL.canopyUnder, bands: 2 }),
+  );
+  c.position.set(x, y, z);
+  c.castShadow = true;
+  g.add(c);
+}
+
+/** A projecting cornice just under the roof. */
+function cornice(g: THREE.Group, w: number, d: number, x: number, y: number, z: number) {
+  const c = new THREE.Mesh(
+    new THREE.BoxGeometry(w + 0.7, 0.34, d + 0.7),
+    cel({ color: bodyTone(PAL.concrete), bands: 2 }),
+  );
+  c.position.set(x, y, z);
+  c.castShadow = true;
+  g.add(c);
+}
+
+/** Parapet ring + coping, returned so roof clutter can sit on the deck. */
+function parapet(g: THREE.Group, w: number, d: number, x: number, y: number, z: number, hh = 0.7) {
+  for (const [pw, pd, px, pz] of [
+    [w, 0.18, 0, -d / 2],
+    [w, 0.18, 0, d / 2],
+    [0.18, d, -w / 2, 0],
+    [0.18, d, w / 2, 0],
+  ] as const) {
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(pw, hh, pd),
+      cel({ color: bodyTone(PAL.concrete), bands: 2 }),
+    );
+    wall.position.set(x + px, y + hh / 2, z + pz);
+    wall.castShadow = true;
+    g.add(wall);
+    // coping stone capping the parapet
+    const cap = new THREE.Mesh(
+      new THREE.BoxGeometry(pw + 0.14, 0.1, pd + 0.14),
+      cel({ color: PAL.canopyUnder, bands: 2 }),
+    );
+    cap.position.set(x + px, y + hh + 0.05, z + pz);
+    g.add(cap);
+  }
+}
+
+/** A recessed shopfront bay on the face toward the street. */
+function shopfront(g: THREE.Group, w: number, d: number, x: number, z: number, face: number, shop?: { deva: string; latin: string; bg: number; fg: number }) {
+  const front = z + face * (d / 2 + 0.1);
+  // shuttered box
+  const shutter = new THREE.Mesh(
+    new THREE.BoxGeometry(Math.min(w * 0.62, 6), 2.5, 0.12),
+    cel({ color: 0x8a8579, bands: 2 }),
+  );
+  shutter.position.set(x, 1.25, front);
+  g.add(shutter);
+  // pilasters either side
+  for (const sx of [-1, 1]) {
+    const pil = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3, 2.9, 0.18),
+      cel({ color: bodyTone(PAL.concrete), bands: 2 }),
+    );
+    pil.position.set(x + sx * Math.min(w * 0.34, 3.4), 1.45, front + face * 0.02);
+    g.add(pil);
+  }
   if (shop) {
-    const face = Math.sign(z) || 1;
     const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(Math.min(w * 0.8, 7), 1.8),
+      new THREE.PlaneGeometry(Math.min(w * 0.7, 7), 1.7),
       flat({
         map: shopSignTexture(shop.deva, shop.latin, `#${shop.bg.toString(16).padStart(6, '0')}`, `#${shop.fg.toString(16).padStart(6, '0')}`),
         toneMapped: false,
       }),
     );
-    sign.position.set(x, 4.1, z + face * (d / 2 + 0.08));
+    sign.position.set(x, 3.0, front + face * 0.05);
     sign.rotation.y = face > 0 ? 0 : Math.PI;
     g.add(sign);
-    // shutter
-    const shutter = new THREE.Mesh(
-      new THREE.BoxGeometry(Math.min(w * 0.7, 6), 2.6, 0.1),
-      cel({ color: 0x8a8579, bands: 2 }),
-    );
-    shutter.position.set(x, 1.3, z + face * (d / 2 + 0.06));
-    g.add(shutter);
   }
-  windows(g, w, h, d, 0, x, z, rnd() > 0.6 ? PAL.trainWindow : PAL.chawlShade);
-  roofClutter(g, w, d, h, x, z, 1.2);
 }
 
-/** A tower, to give the skyline some vertical punctuation. */
+/** Old chawl: ground colonnade, continuous balcony, chajja, cornice, parapet. */
+function chawl(g: THREE.Group, x: number, z: number, w: number, storeys: number) {
+  const face = Math.sign(z) || 1; // toward the street
+  const d = 11;
+  const base = plinth(g, w, d, x, z, 2.9);
+  const h = base + storeys * 3;
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h - base, d),
+    cel({ color: bodyTone(rnd() > 0.5 ? PAL.chawl : PAL.chawlAlt) }),
+  );
+  body.position.set(x, base + (h - base) / 2, z);
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  // the balcony is what makes a chawl a chawl: a full-width deck, a balustrade
+  // with a rhythm of openings, and the chajja above it
+  const bays = Math.max(3, Math.floor(w / 3));
+  for (let s = 1; s <= storeys; s++) {
+    const y = base + s * 3;
+    const zf = z + face * (d / 2);
+    const deck = new THREE.Mesh(
+      new THREE.BoxGeometry(w, 0.18, 2.2),
+      cel({ color: PAL.concrete, bands: 2 }),
+    );
+    deck.position.set(x, y - 0.09, zf + face * 1.1);
+    deck.castShadow = true;
+    g.add(deck);
+    // balustrade: a run of short piers with gaps, not a solid slab
+    const balLen = w / bays;
+    for (let b = 0; b < bays; b++) {
+      const bx = x - w / 2 + balLen * (b + 0.5);
+      const pier = new THREE.Mesh(
+        new THREE.BoxGeometry(balLen * 0.42, 0.95, 0.1),
+        cel({ color: PAL.balcony, bands: 2 }),
+      );
+      pier.position.set(bx, y + 0.48, zf + face * 2.15);
+      g.add(pier);
+    }
+    // chajja: the sunshade slab over the balcony
+    const chajja = new THREE.Mesh(
+      new THREE.BoxGeometry(w + 0.4, 0.14, 2.6),
+      cel({ color: PAL.concrete, bands: 2 }),
+    );
+    chajja.position.set(x, y + 2.5, zf + face * 1.3);
+    chajja.castShadow = true;
+    g.add(chajja);
+  }
+
+  // ground-floor colonnade: a run of piers
+  for (let b = 0; b < bays; b++) {
+    const bx = x - w / 2 + (w / bays) * (b + 0.5);
+    const pier = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, base - 0.2, 0.3),
+      cel({ color: bodyTone(PAL.concrete), bands: 2 }),
+    );
+    pier.position.set(bx, (base - 0.2) / 2, z + face * (d / 2 + 0.9));
+    g.add(pier);
+  }
+
+  stringCourse(g, w, d, x, base + 0.1, z);
+  cornice(g, w, d, x, h + 0.2, z);
+  parapet(g, w, d, x, h + 0.4, z);
+  windows(g, w, h - base, d, base, x, z, PAL.chawlShade);
+  roofClutter(g, w, d, h + 0.4, x, z, 0.8);
+}
+
+/** Mid-rise: plinth + shopfront, recessed windows, string course, parapet. */
+function midrise(g: THREE.Group, x: number, z: number, w: number, d: number, storeys: number, shop?: { deva: string; latin: string; bg: number; fg: number }) {
+  const face = Math.sign(z) || 1;
+  const base = plinth(g, w, d, x, z, 3.4);
+  const h = base + storeys * 3.2;
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h - base, d),
+    cel({ color: bodyTone(rnd() > 0.5 ? PAL.midrise : PAL.concrete) }),
+  );
+  body.position.set(x, base + (h - base) / 2, z);
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  shopfront(g, w, d, x, z, face, shop);
+  stringCourse(g, w, d, x, base + 0.1, z, 0.26);
+  // a mid string course partway up
+  stringCourse(g, w, d, x, base + (storeys * 3.2) * 0.55, z, 0.14);
+  cornice(g, w, d, x, h + 0.2, z);
+  parapet(g, w, d, x, h + 0.4, z, 0.8);
+  windows(g, w, h - base, d, base, x, z, rnd() > 0.6 ? PAL.trainWindow : PAL.chawlShade);
+  roofClutter(g, w, d, h + 0.4, x, z, 1.2);
+}
+
+/** A tower: mullion bands, a setback, parapet, scaled roof clutter. */
 function tower(g: THREE.Group, x: number, z: number) {
-  const h = 34 + rnd() * 22;
   const w = 12;
   const d = 12;
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(w, h, d),
-    cel({ color: PAL.tower, bands: 4 }),
+  const total = 34 + rnd() * 22;
+  const setback = total * 0.72; // a setback partway up, very Mumbai
+  const lowW = w;
+  const lowD = d;
+  const hiW = w * 0.72;
+  const hiD = d * 0.72;
+
+  const low = new THREE.Mesh(
+    new THREE.BoxGeometry(lowW, setback, lowD),
+    cel({ color: bodyTone(PAL.tower), bands: 4 }),
   );
-  body.position.set(x, h / 2, z);
-  body.castShadow = true;
-  g.add(body);
-  windows(g, w, h, d, 0, x, z, PAL.towerGlass);
-  roofClutter(g, w, d, h, x, z, 1.4);
+  low.position.set(x, setback / 2, z);
+  low.castShadow = true;
+  g.add(low);
+  const high = new THREE.Mesh(
+    new THREE.BoxGeometry(hiW, total - setback, hiD),
+    cel({ color: bodyTone(PAL.tower), bands: 4 }),
+  );
+  high.position.set(x, setback + (total - setback) / 2, z);
+  high.castShadow = true;
+  g.add(high);
+  // the setback slab
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(lowW + 0.4, 0.3, lowD + 0.4),
+    cel({ color: PAL.canopyUnder, bands: 2 }),
+  );
+  slab.position.set(x, setback, z);
+  g.add(slab);
+  // mullion bands on the lower shaft
+  for (let i = 1; i < 5; i++) {
+    stringCourse(g, lowW, lowD, x, (setback * i) / 5, z, 0.1);
+  }
+  parapet(g, hiW, hiD, x, total, z, 0.6);
+  windows(g, lowW, setback, lowD, 0, x, z, PAL.towerGlass);
+  windows(g, hiW, total - setback, hiD, setback, x, z, PAL.towerGlass);
+  roofClutter(g, hiW, hiD, total + 0.6, x, z, 1.4);
 }
 
 const SHOPS = [

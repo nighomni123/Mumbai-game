@@ -49,6 +49,8 @@ export class Player {
   private dragging = false;
   private hadLock = false;
   private box: Box2[] = [];
+  /** Colliders that move each frame (the local). Rewritten every frame. */
+  private dyn: Box2[] = [];
   private lastLook = 0;
   private camera: THREE.PerspectiveCamera;
   private dom: HTMLElement;
@@ -57,11 +59,36 @@ export class Player {
     this.camera = camera;
     this.dom = dom;
     this.pos.set(L.spawn.x, L.platformH, L.spawn.z);
+    this.buildStatic();
+  }
+
+  /**
+   * Invisible walls: the four running lines are not walkable, and the station
+   * building is solid. Without these the player walks into the ballast and
+   * the camera ends up under the sleepers.
+   */
+  private buildStatic() {
+    const half = L.halfX;
+    for (const z of L.trackZ) {
+      this.box.push({ x0: -half, x1: half, z0: z - 1.9, z1: z + 1.9, top: 0.5 });
+    }
+    // station building on the far road side
+    this.box.push({ x0: -24, x1: 12, z0: L.footpathFar[0] - 6, z1: L.footpathFar[0], top: 9 });
   }
 
   /** Register a solid box (the player is kept on top of it when standing on it). */
   addBlock(b: Box2) {
     this.box.push(b);
+  }
+
+  /**
+   * Set the solid volume of a MOVING object (the local). Called every frame
+   * with the coach's current AABB. Without this the player walks straight
+   * through the train and the camera ends up inside a coach.
+   */
+  setMoving(b: Box2 | null) {
+    this.dyn.length = 0;
+    if (b) this.dyn.push(b);
   }
 
   start = () => {
@@ -139,7 +166,7 @@ export class Player {
   }
 
   private resolve(p: THREE.Vector3) {
-    for (const b of this.box) {
+    for (const b of [...this.box, ...this.dyn]) {
       // only collide if the player's feet are below the block's top
       if (p.y > b.top - 0.05) continue;
       const dxL = p.x - b.x0;
