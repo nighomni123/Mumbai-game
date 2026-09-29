@@ -28,54 +28,158 @@ import { toLocal, tileOf, TILE_M, tileBounds } from "./geo.mjs";
 const IN = "data/build";
 const OUT = "data/build/chunks";
 
-/** Floor-to-floor and default storey heights for Greater Mumbai, in metres. */
-const STOREY = { resi: 3.0, comm: 3.6, ind: 5.0 };
-
 /**
- * Normalise a raw `type` string into a small set of facade classes. This is
- * the "semantic interpretation" step — the model decides what a building IS,
- * the data only says what OSM called it.
+ * Normalise a raw OSM `type` into a small set of facade classes. This is the
+ * "semantic interpretation" step — the data only says what OSM called it; we
+ * decide what kind of building that is, which is what drives the facade
+ * colour and the height band.
  */
 export function classify(type, name) {
   const t = (type || "").toLowerCase();
   const n = (name || "").toLowerCase();
   if (/industrial|warehouse|factory|storage|tank|shed|godown|plant/.test(t + n)) return "industrial";
-  if (/commercial|office|retail|mall|shop|market|hotel|bank|hospital|clinic|mall/.test(t + n)) return "commercial";
-  if (/school|college|university|education|hostel/.test(t + n)) return "institutional";
-  if (/temple|mosque|church|religious|shrine|gurudwara|mandir|masjid/.test(t + n)) return "religious";
-  if (/apartment|residential|house|terrace|flat|chawl|bunglow|bungalow|society/.test(t)) return "residential";
-  if (/infrastructure|transport|station|bridge|water|electricity|utility/.test(t + n)) return "infrastructure";
-  return "residential"; // bare "Building"/unknown default to residential mass
+  if (/commercial|office|retail|mall|shop|market|hotel|bank|hospital|clinic/.test(t + n)) return "commercial";
+  if (/school|college|university|education|hostel|college/.test(t + n)) return "institutional";
+  if (/hospital|clinic|medical|health/.test(t + n)) return "institutional";
+  if (/temple|mosque|church|religious|shrine|gurudwara|mandir|masjid|sthanak/.test(t + n)) return "religious";
+  if (/infrastructure|transport|station|bridge|water|electricity|utility|railway|subway/.test(t + n)) return "infrastructure";
+  if (/apartment/.test(t)) return "apartments";
+  if (/residential|house|terrace|flat|chawl|bungalow|society/.test(t)) return "residential";
+  return "residential"; // bare "Building"/unknown: residential mass is the safe prior
+}
+
+/* ------------------------------------------------------------------ *
+ * Height resolution.
+ *
+ * Every constant here is a documented PLANNING DEFAULT, not a measurement,
+ * except A_REF_M2. They are stated explicitly so they can be argued with and
+ * re-tuned from real data later. See docs/height-sources.md for the full
+ * derivation, the measured findings that motivate the rule, and the
+ * calibration query to replace them.
+ *
+ * The one thing that is MEASURED and matters most: area is a NON-MONOTONIC
+ * predictor of height in Mumbai. A 400 m2 footprint is far more likely to be a
+ * low shed or a redeveloped slab than a tower; Mumbai's towers have SMALL
+ * footprints on 5-10x plot ratios. So larger footprint => SHORTER building,
+ * the opposite of the naive "big building = tall building" rule that this file
+ * previously implemented. The rule below encodes that sign.
+ * ------------------------------------------------------------------ */
+
+/** Floor-to-floor height in metres, by class. */
+const FTF = {
+  residential: 3.0,
+  apartments: 3.0,
+  commercial: 3.6,
+  institutional: 3.6,
+  industrial: 4.5,
+  religious: 4.5,
+  infrastructure: 6.0,
+  _default: 3.0,
+};
+
+/** Height band in metres by class — the safety rail. Err low. */
+const BAND = {
+  residential: [6.0, 30.0],
+  apartments: [9.0, 45.0],
+  commercial: [6.0, 40.0],
+  institutional: [8.0, 45.0],
+  industrial: [6.0, 20.0],
+  religious: [4.5, 18.0],
+  infrastructure: [5.0, 30.0],
+  _default: [6.0, 30.0],
+};
+
+/** Median storeys by macro-zone. */
+const ZONE_STORES = {
+  south_mumbai: 4,   // Colaba / Fort / Malabar Hill / Worli — old stock, low FAR
+  island_city: 4,    // Nariman Point, Cuffe Parade — few, but very tall
+  central: 7,         // Dadar / Parel / Sion / Mahim — mixed, redeveloping
+  western_suburb: 12, // Andheri / Bandra / Powai / Goregaon — 7-20 storey
+  eastern_suburb: 8,  // Chembur / Bhandup / Kurla
+  new_mumbai: 5,      // Navi Mumbai — planned, low-rise, big footprints
+  _default: 6,
+};
+
+const A_REF_M2 = 58.0;      // MEASURED median footprint area, Andheri East
+const TOWER_TRIGGER_M2 = 2500.0;
+const TOWER_CAP_M = 120.0;  // never invent a supertall
+
+/** Macro-zone from WGS84 lon/lat. Coarse and explicit; see docs/height-sources.md. */
+function zoneOf(lon, lat) {
+  if (lon > 72.95) return "new_mumbai";                       // Navi Mumbai
+  if (lat < 18.95) {
+    // Nariman Point is its own micro-zone: very few, very tall
+    if (lon > 72.818 && lon < 72.832 && lat < 18.945 && lat > 18.915) return "island_city";
+    return "south_mumbai";
+  }
+  if (lat < 19.03 && lon < 72.88) return "central";            // Dadar / Parel / Sion
+  if (lon < 72.88) return "western_suburb";                    // Andheri / Bandra / Powai
+  return "eastern_suburb";                                     // Chembur / Bhandup / Kurla
+}
+
+/** Clamp helper. */
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+/**
+ * Reject any height that is physically implausible, whatever its source.
+ * This is what rejects Overture's measured Mumbai median of 2.3 m and its
+ * 500 m outliers — so it must be applied to measured heights too, not just
+ * to estimates.
+ */
+export function saneHeight(height, floors) {
+  if (height === null || height === undefined) return false;
+  if (!(height >= 2.7 && height <= 250.0)) return false;
+  if (floors !== null && floors !== undefined && floors > 0) {
+    const ftf = height / floors;
+    if (!(ftf >= 2.4 && ftf <= 6.5)) return false;
+  }
+  return true;
 }
 
 /**
- * Conservative height heuristic. Given a footprint area (m2) and a facade
- * class, return a plausible Greater-Mumbai height. This is the documented
- * fallback used when no authoritative height exists; every result carries a
- * low `height_confidence` and `height_source: "estimate"` so nothing
- * downstream mistakes it for survey data.
+ * The fallback estimate. Zone prior is the base; area is a DAMPED,
+ * NON-MONOTONIC nudge (a nudge, never a driver); the result is clamped into
+ * the class band; only a genuine tower signature lifts past the band.
  *
- * The rules encode real Mumbai stock: a 2-3 storey chawl ~9 m, a midrise
- * ~15-25 m, a residential tower 40-100 m, industrial sheds are tall and
- * flat. We are deliberately conservative (biased low) so the skyline never
- * over-claims.
+ * Confidence for an ESTIMATE never exceeds 0.45 — downstream code branches on
+ * height_source, not on the number, so an estimate is never read as a survey.
  */
-export function estimateHeight(areaM2, cls) {
-  const A = Math.max(1, areaM2);
-  const s = STOREY[cls] ?? STOREY.resi;
-  let floors;
-  if (cls === "industrial") {
-    // large-footprint industrial is a shed, not a tower
-    floors = A > 4000 ? 2 : A > 800 ? 3 : 1;
-  } else if (cls === "commercial" || cls === "institutional") {
-    floors = A > 6000 ? 14 : A > 2000 ? 8 : A > 600 ? 5 : 3;
-  } else if (cls === "religious") {
-    floors = 1; // temples/shrines are low, wide
-  } else {
-    // residential: small footprint => chawl/low-rise; large => tower
-    floors = A > 5000 ? 26 : A > 2500 ? 16 : A > 1200 ? 10 : A > 500 ? 6 : A > 150 ? 3 : 2;
+export function estimateHeight(areaM2, cls, zone) {
+  const a = Math.max(areaM2, 10.0);
+  const ftf = FTF[cls] ?? FTF._default;
+  const [lo, hi] = BAND[cls] ?? BAND._default;
+  const z0 = ZONE_STORES[zone] ?? ZONE_STORES._default;
+
+  // 1. zone prior is the base
+  let storeys = z0;
+
+  // 2. area term — NON-MONOTONIC, damped to +/-1 storey per octave
+  const s = clamp(Math.log(a / A_REF_M2) / Math.log(4.0), -1.0, 1.0);
+  if (s < 0) storeys += -s * 0.2 * Math.min(1.0, z0 / 10.0); // small footprint nudges up
+  else storeys -= s * 0.35;                                     // large footprint nudges down
+
+  // 3. at least one storey
+  storeys = Math.max(1.0, storeys);
+
+  // 4. tower escape hatch — gated on area AND on a dense zone
+  if (a >= TOWER_TRIGGER_M2 && ["western_suburb", "central", "island_city", "south_mumbai"].includes(zone)) {
+    storeys = Math.max(storeys, hi / ftf);
+    storeys = Math.min(storeys, TOWER_CAP_M / ftf);
   }
-  return { height_m: +(floors * s).toFixed(1), floors, height_source: "estimate", height_confidence: 0.3 };
+
+  // 5. convert, then clamp into the band — the safety rail, always
+  let height = clamp(storeys * ftf, lo, hi);
+  let floors = Math.max(1, Math.round(height / ftf));
+
+  // 6. confidence: area alone 0.10, +class, +zone, minus a clamp penalty
+  let c = 0.1;
+  if (cls) c += 0.15;
+  if (zone) c += 0.15;
+  if (a > A_REF_M2) c += 0.1 * Math.min(1.0, (a / A_REF_M2 - 1.0) / 3.0);
+  if (height >= hi - 1e-9) c -= 0.1;   // sitting on a clamp -> less sure
+  const confidence = clamp(c, 0.05, 0.45);
+
+  return { height_m: Math.round(height * 10) / 10, floors, height_source: "estimated", height_confidence: Math.round(confidence * 100) / 100 };
 }
 
 const Q = (v) => Math.round(v * 100) / 100; // 2dp metres, plenty at 1:1
@@ -100,7 +204,8 @@ function processTile(file, globalIndex) {
 
     // 2. classify + height
     const cls = classify(bld.type, bld.name);
-    const h = estimateHeight(bld.area_m2, cls);
+    const zone = zoneOf(bld.centroid[0], bld.centroid[1]);
+    const h = estimateHeight(bld.area_m2, cls, zone);
 
     // 3. project rings to local metres, quantise
     const localRing = ring.map(([lon, lat]) => {
@@ -120,6 +225,7 @@ function processTile(file, globalIndex) {
       c: [Q(c.x), Q(c.y)],     // centroid, local metres
       a: bld.area_m2,          // m2
       t: cls,                  // facade class (our semantic layer)
+      z: zone,                 // macro-zone (drives the height prior)
       o: bld.type,            // original OSM type, kept for provenance
       n: bld.name,            // name, if OSM had one
       H: h.height_m,          // resolved height (metres)
