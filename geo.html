@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  Dev-only harness for the geographic Greater Mumbai world. Renders the real
+  ingested city with a free camera and no React/Convex/HUD, so the data can be
+  inspected, screenshotted and validated on its own. Not part of the product
+  build; see src/geo/preview.ts.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Greater Mumbai — geo preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #f0dcb4; overflow: hidden; }
+      #geo { position: fixed; inset: 0; }
+      #info {
+        position: fixed; left: 8px; top: 8px; z-index: 5;
+        font: 12px ui-monospace, monospace; color: #fff;
+        background: rgba(0,0,0,0.45); padding: 4px 8px; border-radius: 4px;
+        pointer-events: none; white-space: pre;
+      }
+      #hint {
+        position: fixed; right: 8px; top: 8px; z-index: 5;
+        font: 12px ui-monospace, monospace; color: #fff;
+        background: rgba(0,0,0,0.45); padding: 4px 8px; border-radius: 4px;
+        pointer-events: none; text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="geo"></div>
+    <div id="info">loading…</div>
+    <div id="hint">
+      <b>CREATIVE</b> — free fly<br />
+      WASD move · Space/Ctrl up-down<br />
+      Shift sprint · drag look<br />
+      dbl-click → ORBIT (wheel zoom)<br />
+      QA: __geo.teleport('andheri')
+    </div>
+    <script type="module" src="/src/geo/preview.ts"></script>
+  </body>
+</html>
