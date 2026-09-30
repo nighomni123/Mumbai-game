@@ -97,7 +97,7 @@ if (el) {
   yaw = Math.PI;
   pitch = -0.42;
 
-  const city = new GeoCity(scene, { loadRadius: 2 });
+  const city = new GeoCity(scene, camera, { loadRadius: 2 });
   city.ensureAround(start.x, start.y);
 
   const info = document.getElementById("info");
@@ -144,6 +144,7 @@ if (el) {
 
   const fwd = new THREE.Vector3();
   const right = new THREE.Vector3();
+  const lookAt = new THREE.Vector3(); // scratch: no per-frame allocation
   let last = performance.now();
   let raf = 0;
   let stopped = false;
@@ -181,10 +182,10 @@ if (el) {
       if (keys.has("Space")) pos.y += sp;
       if (keys.has("ControlLeft") || keys.has("KeyC")) pos.y -= sp;
       camera.position.copy(pos);
-      const look = pos.clone().addScaledVector(fwd, 300);
-      camera.lookAt(look);
+      camera.lookAt(lookAt.copy(pos).addScaledVector(fwd, 300));
       target.set(pos.x, 0, pos.z);
       city.ensureAround(pos.x, pos.z);
+      city.drain(4); // time-sliced chunk geometry build
     } else {
       fwd.set(-Math.sin(yaw), 0, -Math.cos(yaw));
       right.set(Math.cos(yaw), 0, -Math.sin(yaw));
@@ -202,6 +203,7 @@ if (el) {
       );
       camera.lookAt(target);
       city.ensureAround(target.x, target.z);
+      city.drain(4);
     }
 
     const cx = mode === "creative" ? pos.x : target.x;
@@ -213,7 +215,7 @@ if (el) {
     const w = toWgs84(cx, cz);
     const ri = renderer.info.render;
     setInfo(
-      `chunks ${city.loadedChunks} · calls ${ri.calls} · tris ${(ri.triangles / 1000) | 0}k · ` +
+      `chunks ${city.loadedChunks}${city.pendingBuilds ? ` (+${city.pendingBuilds} building)` : ""} · calls ${ri.calls} · tris ${(ri.triangles / 1000) | 0}k · ` +
         `${w.lat.toFixed(4)}N ${w.lon.toFixed(4)}E · alt ${(mode === "creative" ? pos.y : target.y).toFixed(0)}m`,
     );
     renderer.render(scene, camera);

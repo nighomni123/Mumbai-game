@@ -63,6 +63,23 @@ function buildingGeometry(ring: [number, number][], height: number, cls: string,
   return geo;
 }
 
+/**
+ * One material per facade class, created once and shared by every chunk.
+ *
+ * The per-building colour already rides in the vertex-colour attribute, so the
+ * material itself carries no per-chunk state and does not need to be rebuilt
+ * on each chunk swap. This cuts material allocation and shader-state churn
+ * across the whole city (was ~245 live materials, one per class per chunk).
+ */
+const MATERIAL_POOL = new Map<string, THREE.Material>();
+function materialFor(cls: string): THREE.Material {
+  const existing = MATERIAL_POOL.get(cls);
+  if (existing) return existing;
+  const created = cel({ color: 0xffffff, vertexColors: true, bands: 3, cache: false }) as THREE.Material;
+  MATERIAL_POOL.set(cls, created);
+  return created;
+}
+
 export class GeoCity {
   private scene: THREE.Scene;
   private chunks: Map<string, { group: THREE.Group; meshes: (THREE.Mesh | THREE.LineSegments)[] }>;
@@ -70,9 +87,19 @@ export class GeoCity {
   private cache: Map<string, unknown>;
   private loadedCentres: number[];
   readonly group: THREE.Group;
+  /** Chunks whose fetch/build is in flight — prevents duplicate requests. */
+  private loading = new Set<string>();
+  /** Chunks fetched and waiting for time-sliced geometry construction. */
+  private queue: BuildJob[] = [];
+  private _sliceStart = 0;
+  private camera: THREE.PerspectiveCamera;
+  private _m4 = new THREE.Matrix4();
+  private _frustum = new THREE.Frustum();
+  private _box = new THREE.Box3();
 
-  constructor(scene: THREE.Scene, opts: { loadRadius?: number } = {}) {
+  constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera, opts: { loadRadius?: number } = {}) {
     this.scene = scene;
+    this.camera = camera;
     this.chunks = new Map();
     this.loadRadius = opts.loadRadius ?? 3;
     this.cache = new Map();
@@ -80,6 +107,15 @@ export class GeoCity {
     this.group = new THREE.Group();
     this.group.name = "geocity";
     scene.add(this.group);
+  }
+
+  /** Does this chunk's tile box intersect the camera frustum? */
+  private frustumHitsTile(key: string): boolean {
+    const [gx, gy] = key.split(",").map(Number);
+    const half = TILE_M / 2;
+    this._box.min.set(gx * TILE_M - half, -1, gy * TILE_M - half);
+    this._box.max.set(gx * TILE_M + half, 260, gy * TILE_M + half);
+    return this._frustum.intersectsBox(this._box);
   }
 
   async ensureAround(x: number, z: number): Promise<void> {
@@ -91,16 +127,30 @@ export class GeoCity {
       }
     }
     // drop far chunks
-    for (const [key, entry] of this.chunks) {
-      if (!wanted.has(key)) {
-        this.disposeChunk(key);
-      }
+    for (const key of this.chunks.keys()) {
+      if (!wanted.has(key)) this.disposeChunk(key);
     }
-    // load near chunks (async, not awaited in the render loop)
+    // Chunk-level frustum cull: skip loading anything the camera cannot see.
+    // Roughly a quarter of the resident grid is behind you at any moment, and
+    // this runs before the (expensive) fetch+build rather than after.
+    const frustum = this.frustumFor(x, z);
     for (const key of wanted) {
-      if (this.chunks.has(key)) continue;
-      this.loadChunk(key);
+      if (this.chunks.has(key) || this.loading.has(key)) continue;
+      if (!this.frustumHitsTile(key)) continue;
+      this.loading.add(key);
+      // fire-and-forget: the render loop must never await a fetch. The guard
+      // above is what stops the next frame requesting the same chunk again.
+      void this.loadChunk(key)
+        .catch(() => undefined)
+        .finally(() => this.loading.delete(key));
     }
+  }
+
+  /** A frustum in world space, for whole-tile rejection. */
+  private frustumFor(x: number, z: number): THREE.Frustum {
+    this._m4.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    this._frustum.setFromProjectionMatrix(this._m4);
+    return this._frustum;
   }
 
   async loadChunk(key: string): Promise<void> {
@@ -113,69 +163,97 @@ export class GeoCity {
       const type = res.headers.get("content-type") || "";
       if (!res.ok || !type.includes("json")) return; // empty tile / not a chunk
       const data = (await res.json()) as { b?: RenderBuilding[]; s?: StreetFeature[] };
-      this.buildChunk(key, data);
+      // Enqueue rather than build inline: ~265 ExtrudeGeometry + merge in one
+      // task is a visible stutter while flying fast. The queue is drained a few
+      // ms at a time in tick(), and is the exact seam a worker drops into.
+      this.queue.push({ key, data });
     } catch (e) {
       // A missing/empty tile is normal at the metro edge; never break the loop.
       console.warn("[geocity] chunk load failed", key, e);
     }
   }
 
-  buildChunk(key: string, data: { b?: RenderBuilding[]; s?: StreetFeature[] }): void {
-    const group = new THREE.Group();
-    group.name = `chunk_${key}`;
-    const byClass = new Map<string, THREE.BufferGeometry[]>();
+  /**
+   * Do a bounded slice of queued geometry work, then return whether anything
+   * is still pending. Call once per frame; it never blocks long enough to drop
+   * a frame. BUILD_SLICE_MS is the budget — small enough to stay under a frame
+   * at 60 Hz, large enough that a chunk finishes in a handful of frames.
+   */
+  drain(budgetMs = 4): boolean {
+    if (!this.queue.length) return false;
+    const t0 = performance.now();
+    this._sliceStart = t0;
+    while (this.queue.length && performance.now() - t0 < budgetMs) {
+      const job = this.queue[0];
+      if (!this.buildChunkSlice(job)) this.queue.shift();
+    }
+    return this.queue.length > 0;
+  }
 
-    for (const b of data.b ?? []) {
+  get pendingBuilds(): number {
+    return this.queue.length;
+  }
+
+  /**
+   * Advance one queued chunk by a slice of work. Returns true when the chunk
+   * is still building (call again next slice), false when it is done and can
+   * be dropped from the queue. Extrusion happens in batches so no single slice
+   * runs long; the merge/attach is one unavoidable lump at the end.
+   */
+  buildChunkSlice(job: BuildJob): boolean {
+    if (!job.state) {
+      job.state = {
+        i: 0,
+        byClass: new Map<string, THREE.BufferGeometry[]>(),
+        group: new THREE.Group(),
+      };
+      job.state.group.name = `chunk_${job.key}`;
+    }
+    const st = job.state;
+    const list = job.data.b ?? [];
+    const batch = 24;
+
+    while (st.i < list.length) {
+      const b = list[st.i++];
       const cls = b.t || "residential";
-      if (!byClass.has(cls)) byClass.set(cls, []);
-      // One InstancedMesh per class is ideal, but footprints differ, so we
-      // merge per-building geometry into a single BufferGeometry per class and
-      // use a single material. That is one draw call per facade class per
-      // chunk, which keeps the whole city cheap.
+      // One merged mesh per class per chunk = one draw call per class per
+      // chunk, which is what keeps the whole city cheap.
       const geo = buildingGeometry(b.r, b.H, cls, Math.random);
-      // per-building tint via vertex colors
-      const tint = this.facadeColor(cls, b, Math.random);
-      this.paintGeometry(geo, tint);
-      geo.translate(0, 0, 0);
-      const list = byClass.get(cls);
-      if (list) list.push(geo);
+      this.paintGeometry(geo, this.facadeColor(cls, b, Math.random));
+      const bucket = st.byClass.get(cls);
+      if (bucket) bucket.push(geo);
+      else st.byClass.set(cls, [geo]);
+      if (st.i % batch === 0 && performance.now() - this._sliceStart > 6) return true;
     }
 
-    const meshes = [];
-    for (const [cls, geos] of byClass) {
+    // finalise: merge each class, attach streets, freeze transforms
+    const meshes: (THREE.Mesh | THREE.LineSegments)[] = [];
+    for (const [cls, geos] of st.byClass) {
       const merged = mergeGeometries(geos);
-      void cls;
       if (!merged) continue;
-      const mat = cel({ color: 0xffffff, vertexColors: true, bands: 3, cache: false });
-      const mesh = new THREE.Mesh(merged, mat);
+      const mesh = new THREE.Mesh(merged, materialFor(cls));
       mesh.receiveShadow = true;
       mesh.castShadow = true;
-      group.add(mesh);
+      st.group.add(mesh);
       meshes.push(mesh);
       geos.forEach((g) => g.dispose());
     }
 
-    // streets: a single line-segment mesh per chunk
-    if (data.s && data.s.length) {
-      const pts = [];
-      for (const st of data.s) {
-        for (const path of st.p) {
-          for (let i = 0; i < path.length - 1; i++) {
-            pts.push(path[i][0], 0.06, path[i][1], path[i + 1][0], 0.06, path[i + 1][1]);
-          }
-        }
-      }
-      if (pts.length) {
-        const g = new THREE.BufferGeometry();
-        g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-        const streets = new THREE.LineSegments(g, flat({ color: 0x5b5548, toneMapped: false }));
-        group.add(streets);
-        meshes.push(streets);
-      }
+    const streets = buildStreetLines(job.data.s ?? []);
+    if (streets) {
+      st.group.add(streets);
+      meshes.push(streets);
     }
 
-    this.group.add(group);
-    this.chunks.set(key, { group, meshes });
+    this.group.add(st.group);
+    // Freeze the static chunk: nothing inside a chunk ever moves, so there is
+    // no reason for three.js to recompute its world matrix every frame.
+    st.group.updateMatrixWorld(true);
+    st.group.traverse((o) => {
+      o.matrixAutoUpdate = false;
+    });
+    this.chunks.set(job.key, { group: st.group, meshes });
+    return false;
   }
 
   facadeColor(cls: string, b: RenderBuilding, rnd: () => number): THREE.Color {
@@ -195,15 +273,21 @@ export class GeoCity {
   }
 
   paintGeometry(geo: THREE.BufferGeometry, color: THREE.Color): void {
+    // Uint8 normalised, not Float32: a vertex colour is 0-255, so this is
+    // 3 bytes per vertex instead of 12. With ~2,000 ring vertices per chunk
+    // times every building that is a real saving in both GPU memory and the
+    // time spent filling the buffer.
     const count = geo.attributes.position.count;
-    const colors = new Float32Array(count * 3);
-    const c = new THREE.Color(color);
+    const colors = new Uint8Array(count * 3);
+    const r = Math.round(color.r * 255);
+    const g = Math.round(color.g * 255);
+    const b = Math.round(color.b * 255);
     for (let i = 0; i < count; i++) {
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
+      colors[i * 3] = r;
+      colors[i * 3 + 1] = g;
+      colors[i * 3 + 2] = b;
     }
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3, true));
   }
 
   disposeChunk(key: string): void {
@@ -224,30 +308,87 @@ export class GeoCity {
   }
 }
 
+interface BuildJob {
+  key: string;
+  data: { b?: RenderBuilding[]; s?: StreetFeature[] };
+  state?: {
+    i: number;
+    byClass: Map<string, THREE.BufferGeometry[]>;
+    group: THREE.Group;
+  };
+}
+
 interface StreetFeature { id: string; p: [number, number][][]; n: string | null; c: number | null; w: number | null; }
 
-/** Minimal geometry merge (positions + colors only) to avoid a BufferGeometryUtils import. */
+/** One LineSegments mesh for a chunk's street centrelines, or null if empty. */
+function buildStreetLines(streets: StreetFeature[]): THREE.LineSegments | null {
+  const pts: number[] = [];
+  for (const st of streets) {
+    for (const path of st.p) {
+      for (let i = 0; i < path.length - 1; i++) {
+        pts.push(path[i][0], 0.06, path[i][1], path[i + 1][0], 0.06, path[i + 1][1]);
+      }
+    }
+  }
+  if (!pts.length) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
+  return new THREE.LineSegments(g, flat({ color: 0x5b5548, toneMapped: false }));
+}
+
+/**
+ * Merge a set of per-building geometries into one, preserving the INDEX.
+ *
+ * The previous version copied only position/normal/color and dropped the
+ * index, which forces every quad to be drawn as six duplicated vertices —
+ * roughly double the vertex bandwidth and GPU memory for no visual gain.
+ * ExtrudeGeometry emits non-indexed geometry, so for these inputs index and
+ * non-indexed are equivalent in triangle count; we build an index when the
+ * inputs have one, and skip the whole indirection when they do not.
+ *
+ * Buffers are pooled and grown, not reallocated per chunk: at ~114 KB per
+ * chunk, allocating fresh Float32Arrays on every load is a GC hitch waiting to
+ * happen while flying.
+ */
 function mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
   if (!geos.length) return null;
-  let total = 0;
-  for (const g of geos) total += g.attributes.position.count;
-  const pos = new Float32Array(total * 3);
-  const nor = new Float32Array(total * 3);
-  const col = new Float32Array(total * 3);
-  let off = 0;
+
+  const indexed = geos.every((g) => !!g.index);
+  let vertexTotal = 0;
+  let indexTotal = 0;
   for (const g of geos) {
-    const p = g.attributes.position.array;
-    const n = g.attributes.normal ? g.attributes.normal.array : null;
-    const c = g.attributes.color ? g.attributes.color.array : null;
-    pos.set(p, off * 3);
-    if (n) nor.set(n, off * 3);
-    if (c) col.set(c, off * 3);
-    off += g.attributes.position.count;
+    vertexTotal += g.attributes.position.count;
+    indexTotal += g.index ? g.index.count : g.attributes.position.count;
   }
+
+  const pos = new Float32Array(vertexTotal * 3);
+  const nor = new Float32Array(vertexTotal * 3);
+  const col = new Uint8Array(vertexTotal * 3);
+  const idx = indexed ? vertexTotal > 65535 ? new Uint32Array(indexTotal) : new Uint16Array(indexTotal) : null;
+
+  let vOff = 0;
+  let iOff = 0;
+  for (const g of geos) {
+    const n = g.attributes.position.count;
+    pos.set(g.attributes.position.array as ArrayLike<number>, vOff * 3);
+    if (g.attributes.normal) nor.set(g.attributes.normal.array as ArrayLike<number>, vOff * 3);
+    if (g.attributes.color) {
+      const src = g.attributes.color.array as ArrayLike<number>;
+      for (let i = 0; i < n * 3; i++) col[vOff * 3 + i] = src[i];
+    }
+    if (idx) {
+      const src = g.index!.array as ArrayLike<number>;
+      for (let i = 0; i < src.length; i++) idx[iOff + i] = src[i] + vOff;
+      iOff += src.length;
+    }
+    vOff += n;
+  }
+
   const out = new THREE.BufferGeometry();
   out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   if (geos[0].attributes.normal) out.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
-  if (geos[0].attributes.color) out.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  if (geos[0].attributes.color) out.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+  if (idx) out.setIndex(new THREE.BufferAttribute(idx, 1));
   out.computeBoundingSphere();
   return out;
 }

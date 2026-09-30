@@ -37,6 +37,8 @@ export class Player {
   readonly object = new THREE.Group();
   private pos = new THREE.Vector3();
   private vel = new THREE.Vector3();
+  /** scratch direction, reused so the render loop allocates nothing */
+  private dir = new THREE.Vector3();
   /**
    * Standing on the carriageway looking at the station building. Both QA
    * passes said the same thing: from the platform the frame has no subject —
@@ -240,7 +242,7 @@ export class Player {
       // is the whole point of the power.
       const cp = Math.cos(this.pitch);
       const lift = (k.has('Space') ? 1 : 0) - (running ? 1 : 0);
-      const dir = new THREE.Vector3(
+      const dir = this.dir.set(
         -sin * cp * fwd + cos * str,
         -Math.sin(this.pitch) * fwd + lift,
         -cos * cp * fwd - sin * str,
@@ -251,7 +253,7 @@ export class Player {
         this.pos.addScaledVector(dir, speed * dt);
       }
     } else {
-      const dir = new THREE.Vector3(-sin * fwd + cos * str, 0, -cos * fwd - sin * str);
+      const dir = this.dir.set(-sin * fwd + cos * str, 0, -cos * fwd - sin * str);
       if (dir.lengthSq() > 1e-6) dir.normalize();
 
       const target = live ? (dir.lengthSq() > 1e-6 ? (running ? RUN : WALK) : 0) : 0;

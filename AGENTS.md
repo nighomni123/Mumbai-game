@@ -480,3 +480,8 @@ setting unless they ask. All of it is measured, not guessed.
   it is genuinely a fixed material colour (a sea shader, a 3D texture).
 - `src/components/BeachSketch.tsx` is pure inline SVG — the house approach to
   illustration here. No image assets.
+
+
+#User note done manually: Some use cases that i thought would be cool:
+  1. Club penguin style game where people can enter and talk in chat boxes i guess more similar to GTA 5 online. People can share favourite spots make friends explore places to go to IRL
+  2. Add photos from your gallery visible virtually at the exact place taken in that angle taken. for example a photo taken of the horizon from the beach if added will show that photo when you look at the horizon from in game. that way it becomes fun to take as many photos as possible of the city and add user added photos something like a collage of different times different people maybe even contributions by people
