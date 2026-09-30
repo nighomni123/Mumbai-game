@@ -13,13 +13,16 @@ Decisions taken 2026-09-30, which this plan does not re-open:
 ## Now — finish the walkable core
 
 ### Street-level layers (a walker needs ground to stand on)
-- [ ] **Road surfaces.** Turn street centrelines into ribbon geometry with width
-      by class. Data has `road_class` (1 = local bulk, 5/6 = arterials) and
-      `name`. Biggest single change to how the city reads, from above and on foot.
-- [ ] **Kerbs + footpaths**, raised kerb line and a walkable strip.
+- [x] **Road surfaces** — ribbons from real centrelines, width DERIVED from
+      `road_class` (no true width field exists; `w` duplicates `c`). `18d5840`
+- [x] **Kerbs + footpaths** — 0.15 m raised kerb, 1.8 m footpath bands
+- [x] **Ground plane** per chunk at y=0
+- [ ] **Open: ground renders near-black at eye level.** Quad is correctly wound
+      (normal +Y) and placed at y=0; cause is the sun shadow camera covering only
+      +/-420 units while the ground quad extends far past it. Lighting fix, not
+      geometry. This is the FIRST thing to chase — a black floor blocks walk
+      mode regardless of what else lands.
 - [ ] **Crossings** at junctions.
-- [ ] **Ground plane.** Flat at elevation 0 first, so walking is correct by
-      default; terrain is additive.
 - [ ] **Terrain (SRTM terrarium z12).** 45 tiles, ~1.5 MB, public domain. The
       Ghats rise fast east of the city, so this is not decoration.
 - [ ] **Water + coastline** (OSM land polygons, same ODbL family as buildings).
