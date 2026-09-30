@@ -40,24 +40,25 @@ interface RenderBuilding {
 
 /** Facade-class geometry, generated from a real footprint ring. */
 function buildingGeometry(ring: [number, number][], height: number, cls: string, rnd: () => number): THREE.BufferGeometry {
-  // Extrude the REAL footprint ring into a prism. The shape lives in XY and
-  // ExtrudeGeometry grows along +Z from 0 to depth. We want the footprint on
-  // the XZ ground plane with the prism rising along +Y, so rotate +90 deg
-  // about X: that maps shape-Y (our northing) onto -Z and the extrusion
-  // axis +Z onto -Y... which points DOWN. So we rotate -90 about X and then
-  // mirror Z, OR equivalently rotate +90 about X and accept the footprint's
-  // northing on -Z. The clean version: rotateX(-90) then flip the sign of the
-  // extrusion by negating the geometry's Y, which we do by rotating +90 and
-  // correcting the footprint axis. Simpler and correct: build then rotate +90
-  // about X so +Z becomes +Y (up), and mirror the footprint's second axis.
+  // Extrude the REAL footprint ring into a prism, 1 unit = 1 m.
+  //
+  // The shape is built in the ring's own coordinates: shape-X = world X,
+  // shape-Y = world northing. ExtrudeGeometry then grows along +Z from 0 to
+  // `height`. A single rotateX(+90) maps (x, y, z) -> (x, -z, y), which puts
+  // the footprint's northing onto world Z and the extrusion along -Y, so the
+  // prism spans y in [-height, 0]; we then lift it to sit on the ground.
+  //
+  // Do NOT negate the northing when building the shape. It looks like it is
+  // needed, but rotateX already mirrors Z, so pre-negating cancels the one
+  // flip we want and mirrors the city across the origin — which put every
+  // building ~10 km from the camera and left the whole map looking like bare
+  // street lines. Verified: a footprint at northing -5148 must land at world
+  // z = -5148.
   const shape = new THREE.Shape();
-  shape.moveTo(ring[0][0], -ring[0][1]);
-  for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], -ring[i][1]);
+  shape.moveTo(ring[0][0], ring[0][1]);
+  for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], ring[i][1]);
   const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-  // +90 deg about X: +Z (extrusion) -> -Y, so flip to get it rising.
   geo.rotateX(Math.PI / 2);
-  // After this rotation the prism spans y in [-height, 0]; lift it to sit on
-  // the ground plane (y >= 0).
   geo.translate(0, height, 0);
   return geo;
 }

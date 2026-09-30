@@ -1,293 +1,335 @@
+# Beach-game
+
+A walkable, cel-shaded 3D Mumbai in the browser, rendered client-side with
+vanilla three.js. No backend, no accounts, no network calls at runtime.
+
+Two separate worlds live in this repo. **`src/mumbai/` is the product** — a
+walkable Western-line station district served at `/dashboard`. **`src/geo/` is
+a data-sourced model of the whole of Greater Mumbai**, currently reachable only
+through its dev harness (`/geo.html`) and not yet wired to a route. They are
+different products with different provenance; see below.
+
 ## Overview
 
-This project uses the following tech stack:
-- Vite
-- Typescript
-- React Router v7 (all imports from `react-router` instead of `react-router-dom`)
-- React 19 (for frontend components)
-- Tailwind v4 (for styling)
-- Shadcn UI (for UI components library)
-- Lucide Icons (for icons)
-- Convex (for backend & database)
-- Convex Auth (for authentication)
-- Framer Motion (for animations)
-- Three js (for 3d models)
+Tech stack:
 
-All relevant files live in the 'src' directory.
+- **Vite** + **React 19** + **TypeScript**
+- **React Router v7** — import from `react-router`, not `react-router-dom`
+- **Tailwind v4** (oklch tokens) + **shadcn/ui** (`src/components/ui`)
+- **Three.js** — vanilla, *not* React Three Fiber
+- **Framer Motion** for UI animation
+- **Lucide** for icons, **Sonner** for toasts
+- **Hono** on Deno (`main.ts`) to serve the production `dist/`
+- **bun** as the package manager (`bun.lock` is authoritative)
 
-Use bun for the package manager.
+All app code lives in `src/`. Import with the `@/` alias (`@/components/ui/button`).
 
-## Setup
+## Getting started
 
-This project is set up already and running on a cloud environment, as well as a convex development in the sandbox.
-
-## Environment Variables
-
-The project is set up with project specific CONVEX_DEPLOYMENT and VITE_CONVEX_URL environment variables on the client side.
-
-The convex server has a separate set of environment variables that are accessible by the convex backend.
-
-Currently, these variables include auth-specific keys: JWKS, JWT_PRIVATE_KEY, and SITE_URL.
-
-
-# Using Authentication (Important!)
-
-You must follow these conventions when using authentication.
-
-## Auth is already set up.
-
-All convex authentication functions are already set up. The auth currently uses email OTP and anonymous users, but can support more.
-
-The email OTP configuration is defined in `src/convex/auth/emailOtp.ts`. DO NOT MODIFY THIS FILE.
-
-Also, DO NOT MODIFY THESE AUTH FILES: `src/convex/auth.config.ts` and `src/convex/auth.ts`.
-
-## Using Convex Auth on the backend
-
-On the `src/convex/users.ts` file, you can use the `getCurrentUser` function to get the current user's data.
-
-## Using Convex Auth on the frontend
-
-The `/auth` page is already set up to use auth. Navigate to `/auth` for all log in / sign up sequences.
-
-You MUST use this hook to get user data. Never do this yourself without the hook:
-```typescript
-import { useAuth } from "@/hooks/use-auth";
-
-const { isLoading, isAuthenticated, user, signIn, signOut } = useAuth();
+```bash
+bun install
+bun run dev        # vite dev server -> http://localhost:5173
+bun run build      # tsc -b && vite build
+bun run lint       # eslint
 ```
 
-## Protected Routes
+The production build in `dist/` is served by `main.ts`, a Deno/Hono static
+server with SPA fallback.
 
-The starter `/dashboard` route is protected with `RequireAuth`. Extend that page
-for the product's authenticated experience, and reuse `RequireAuth` when adding
-another protected route — do NOT hand-roll a redirect to `/auth`, since landing
-on a bare sign-in form with no explanation of what was blocked is confusing.
+There are **no required environment variables**. The world is entirely
+client-side. The only optional ones are `VITE_VLY_APP_ID` /
+`VITE_VLY_MONITORING_URL` for the Vly preview toolbar.
 
-`RequireAuth` states the block on the page the visitor asked for and sends them
-to `/auth?returnTo=<current route>` when they choose to sign in, so they come
-back to it. Pass `title` and `description` to say what the page is:
+## Routes and entry points
 
-```tsx
-<Route
-  path="/dashboard"
-  element={
-    <RequireAuth
-      title="Sign in to view your dashboard"
-      description="Your projects and settings live here."
-    >
-      <Dashboard />
-    </RequireAuth>
-  }
-/>
+| Path | What it is |
+|---|---|
+| `/` | Landing page (`src/pages/Landing.tsx`) |
+| `/dashboard` | The product — the 3D world, public, no sign-in (`src/pages/Dashboard.tsx`) |
+| `/world.html` | **Dev-only harness** — the `src/mumbai/` world with no React and no router |
+| `/geo.html` | **Dev-only harness** — the `src/geo/` city in free-fly mode |
+
+Routes are declared in `src/main.tsx`. The two `.html` harnesses are not part
+of the product build; they exist so the 3D can be inspected in isolation
+(`npx vite`, then open the page).
+
+## The two worlds
+
+Do not conflate them. They are different products with different provenance
+and different licence obligations.
+
+| | `src/mumbai/` | `src/geo/` |
+|---|---|---|
+| What | Authored Charni Road station district | Data-sourced Greater Mumbai |
+| Data | Literals in source: station list, livery, signage, crowd | Real footprints ingested from Mumbai_WFL1 (OSM-derived) |
+| Scale | One station district, walkable at 1 unit = 1 m | Whole metro area, tiled and streamed |
+| Licence | None owed | **ODbL 1.0 attaches to the data** — see below |
+| Entry | `/world.html`, `/dashboard` | `/geo.html` (dev only; not wired to a route) |
+
+### `src/mumbai/` — the station district
+
+`src/mumbai/index.ts` exports `mount(container) -> teardown`. `MumbaiWorld.tsx`
+calls it from a `useEffect`. **This seam is deliberate:** React owns the page,
+the world owns the canvas and the render loop.
+
+**Player and camera state is not React state.** It lives in the plain mutable
+`game` object in `src/mumbai/bridge.ts`, which the HUD polls on
+`requestAnimationFrame`, so movement never re-renders the React overlay. Do not
+lift it into `useState`, context, Zustand, or a store.
+
+World geometry is in **world units where 1 unit = 1 metre**, which keeps walk
+and sprint speeds and prop sizes honest.
+
+Key modules: `stations.ts` (the ordered Western line), `layout.ts` (every
+dimension), `station.ts`, `building.ts`, `city.ts`, `life.ts`, `props.ts`,
+`player.ts`, `bridge.ts`, `Hud.tsx`.
+
+### `src/engine/` — the cel-shading stack
+
+Ported from [`Kenton-GMI/sakura-crossing`](https://github.com/Kenton-GMI/sakura-crossing)
+(**MIT**). `toon.js` (quantised `MeshToonMaterial`), `post.js` (screen-space ink
+from depth plus FXAA), `outline.js` (inverted hull), `sky.js`, `signage.ts`,
+`textures.ts`, `palette.js`.
+
+The upstream licence is kept verbatim at `src/engine/LICENSE.sakura` and **must
+travel with any further vendoring**. These files are deliberately plain JS;
+`tsconfig` runs `allowJs: true, checkJs: false`, so they bundle but are not
+type-checked.
+
+The app ships **zero binary assets** — every sign and texture is painted with
+Canvas2D at runtime.
+
+### `src/geo/` — the geographic city
+
+`src/geo/GeoCity.ts` is a tiled, streaming renderer. The whole city
+(260k+ buildings) never lives in the GPU or in memory at once: chunks are 2 km
+squares, and the renderer keeps only the chunks near the camera, loads their
+JSON on demand, builds one `InstancedMesh` per facade class per chunk, and
+disposes chunks that fall out of range. Geometry is extruded from the real
+footprint rings at real local coordinates; facade variation is procedural and
+Mumbai-specific but never moves or invents a building.
+
+`src/geo/preview.ts` is the dev harness: CREATIVE free-fly by default (`WASD`,
+`Space`/`Ctrl` up/down, `Shift` sprint, drag to look, double-click to toggle
+ORBIT), a live readout of chunks / draw calls / triangles / lon-lat /
+altitude, and `__geo.teleport('<place>')` for 24 real locations (`fort`,
+`charni`, `bkc`, `ghatkopar`, `powai`, `thane`, …). Read the counters before
+trusting any visual impression — a "1k tris" frame means nothing is being
+drawn.
+
+**`scripts/geo.mjs` and `src/geo/geo-constants.ts` MUST stay in sync** (same
+`ORIGIN`, same `TILE_M`, same `METRO_BOUNDS`), or every building lands in the
+wrong place.
+
+## The data pipeline
+
+Runs in order. Output goes to `data/build/`, which is **git-ignored and
+regenerable**.
+
+```bash
+node scripts/ingest-mumbai.mjs    # 1. paged, concurrent, resumable ingest
+node scripts/enrich-chunks.mjs    # 2. dedupe + heights + project to local metres
+node scripts/validate-geo.mjs     # 3. the geographic gate — run before styling
 ```
 
-Pass `redirectImmediately` for a route where bouncing straight to `/auth` really
-is better.
+1. **`scripts/ingest-mumbai.mjs`** — paged, concurrent, resumable, retrying
+   ingest from the public Mumbai_WFL1 ArcGIS FeatureServer. MCGM's own
+   authoritative layer is token-gated (HTTP 499) and is not ingestible;
+   `source_priority: 1` is reserved for it if credentials ever arrive. The last
+   full run: **269,284 buildings / 239,157 streets / 39,959 points**, 0 failures.
+2. **`scripts/enrich-chunks.mjs`** — assigns every building to the tile that
+   contains its **centroid** (so tile-straddling footprints are not
+   double-counted), classifies facades, assigns heights, and projects WGS84
+   rings to the local metric frame. The raw WGS84 stays for provenance.
+3. **`scripts/validate-geo.mjs`** — the gate. Checks the built chunks against
+   the source data and the 36 ground-truth sites in
+   `scripts/validation-sites.mjs`, across all 24 required areas. Run it
+   **before** touching visual styling.
 
-## Auth Page
+### Heights are currently estimated
 
-The auth page is defined in `src/pages/Auth.tsx`. Send sign-in and sign-up actions
-to `/auth`.
+`height_source: "estimated"`, confidence capped at 0.45, by a documented
+per-class rule in `scripts/enrich-chunks.mjs` (zone prior plus a damped
+**non-monotonic** area term — in Mumbai a bigger footprint means a *shorter*
+building). This is the biggest remaining quality gap.
 
-## Authorization
+The measured source is **Google Open Buildings 2.5D Temporal**, which is *not*
+Earth-Engine-gated: its GCS bucket is publicly readable over anonymous HTTP.
+`scripts/ob_height.py` does the anonymous reads, manifest parsing and
+lon/lat → UTM 43N → pixel addressing; **the TIFF pixel decode is still wrong**
+(1e37-range values), so `sample_footprint_height` raises rather than emit a
+fake height. Do not loosen that gate.
 
-You can perform authorization checks on the frontend and backend.
+Full derivation, exact paths, traps and the confidence contract:
+**[`docs/height-sources.md`](docs/height-sources.md)**.
 
-On the frontend, you can use the `useAuth` hook to get the current user's data and authentication state.
+## Data licensing — ODbL 1.0 is live
 
-You should also be protecting queries, mutations, and actions at the base level, checking for authorization securely.
+`src/geo/` ingests from Mumbai_WFL1, which is **OSM-derived**, so the stored
+chunks are a **Derivative Database**. The obligation is real:
 
-## Adding a redirect after auth
+- The **renderer and app code** is a Produced Work. Per the OSMF FAQ you may
+  apply whatever terms you like to it — the application is *not* copyleft.
+- The **chunk data** must be offered under
+  [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+- Attribution belongs **in the data or metadata**, not only in the app UI.
+- The compliant route taken here: commit `scripts/ingest-mumbai.mjs` — the
+  "means of creating" the Derivative Database — and publish the ODbL notice
+  alongside the data rather than shipping an opaque blob.
 
-The `/auth` route in `src/main.tsx` redirects to `/dashboard` by default. If the
-product's main authenticated route is different, update `redirectAfterAuth` to
-that route. A validated same-origin `returnTo` query parameter takes priority so
-users can resume the protected page they originally requested. Never leave an
-authenticated product redirecting back to the public landing page.
+`src/mumbai/` is authored and carries **no** ODbL obligation. Never present
+OSM-derived geometry as first-party; keep the credit in the pipeline.
 
-## Complete authenticated products
+**If `data/build/` is ever committed** rather than regenerated, add
+`© OpenStreetMap contributors` to a `README`/`LICENCE` beside the data, and
+show a one-time splash ("3D data © OpenStreetMap contributors") plus an
+in-app About with full licence detail.
 
-When the requested product implies accounts, a workspace, a dashboard, or other
-signed-in functionality, the task is not complete with only a landing page and
-auth form. Build the main authenticated experience, protect its route, and verify
-that signing in reaches it.
+OSMF's own guidance is "not a comprehensive list" and is explicitly not legal
+advice. If this becomes commercial, get a lawyer to confirm.
 
-# Frontend Conventions
+## Checks and harnesses
 
-You will be using the Vite frontend with React 19, Tailwind v4, and Shadcn UI.
+Runnable checks — no test framework, no fixtures:
 
-Generally, pages should be in the `src/pages` folder, and components should be in the `src/components` folder.
-
-Shadcn primitives are located in the `src/components/ui` folder and should be used by default.
-
-## Page routing
-
-Your page component should go under the `src/pages` folder.
-
-When adding a page, update the react router configuration in `src/main.tsx` to include the new route you just added.
-
-## Shad CN conventions
-
-Follow these conventions when using Shad CN components, which you should use by default.
-- Remember to use "cursor-pointer" to make the element clickable
-- For title text, use the "tracking-tight font-bold" class to make the text more readable
-- Always make apps MOBILE RESPONSIVE. This is important
-- AVOID NESTED CARDS. Try and not to nest cards, borders, components, etc. Nested cards add clutter and make the app look messy.
-- AVOID SHADOWS. Avoid adding any shadows to components. stick with a thin border without the shadow.
-- Avoid skeletons; instead, use the loader2 component to show a spinning loading state when loading data.
-
-
-## Landing Pages
-
-You must always create good-looking designer-level styles to your application. 
-- Make it well animated and fit a certain "theme", ie neo brutalist, retro, neumorphism, glass morphism, etc
-
-Use known images and emojis from online.
-
-If the user is logged in already, show the get started button to say "Dashboard" or "Profile" instead to take them there.
-
-## Responsiveness and formatting
-
-Make sure pages are wrapped in a container to prevent the width stretching out on wide screens. Always make sure they are centered aligned and not off-center.
-
-Always make sure that your designs are mobile responsive. Verify the formatting to ensure it has correct max and min widths as well as mobile responsiveness.
-
-- Always create sidebars for protected dashboard pages and navigate between pages
-- Always create navbars for landing pages
-- On these bars, the created logo should be clickable and redirect to the index page
-
-## Animating with Framer Motion
-
-You must add animations to components using Framer Motion. It is already installed and configured in the project.
-
-To use it, import the `motion` component from `framer-motion` and use it to wrap the component you want to animate.
-
-
-### Other Items to animate
-- Fade in and Fade Out
-- Slide in and Slide Out animations
-- Rendering animations
-- Button clicks and UI elements
-
-Animate for all components, including on landing page and app pages.
-
-## Three JS Graphics
-
-Your app comes with three js by default. You can use it to create 3D graphics for landing pages, games, etc.
-
-
-## Colors
-
-You can override colors in: `src/index.css`
-
-This uses the oklch color format for tailwind v4.
-
-Always use these color variable names.
-
-Make sure all ui components are set up to be mobile responsive and compatible with both light and dark mode.
-
-Set theme using `dark` or `light` variables at the parent className.
-
-## Styling and Theming
-
-When changing the theme, always change the underlying theme of the shad cn components app-wide under `src/components/ui` and the colors in the index.css file.
-
-Avoid hardcoding in colors unless necessary for a use case, and properly implement themes through the underlying shad cn ui components.
-
-When styling, ensure buttons and clickable items have pointer-click on them (don't by default).
-
-Always follow a set theme style and ensure it is tuned to the user's liking.
-
-## Toasts
-
-You should always use toasts to display results to the user, such as confirmations, results, errors, etc.
-
-Use the shad cn Sonner component as the toaster. For example:
-
-```
-import { toast } from "sonner"
-
-import { Button } from "@/components/ui/button"
-export function SonnerDemo() {
-  return (
-    <Button
-      variant="outline"
-      onClick={() =>
-        toast("Event has been created", {
-          description: "Sunday, December 03, 2023 at 9:00 AM",
-          action: {
-            label: "Undo",
-            onClick: () => console.log("Undo"),
-          },
-        })
-      }
-    >
-      Show Toast
-    </Button>
-  )
-}
+```bash
+bun run check:stations   # station order, unique codes, increasing chainage, real Devanagari
+bun run check:fly        # the admin-power (creative) flight movement maths, headless
+node scripts/validate-geo.mjs   # the geographic gate (needs data/build/)
 ```
 
-Remember to import { toast } from "sonner". Usage: `toast("Event has been created.")`
+Run `check:stations` after touching `src/mumbai/stations.ts` — every sign,
+board and departure LED derives from that list by adjacency, so if the order
+drifts the place stops reading as a real railway.
 
-## Dialogs
+### Live testing — `scripts/live.mjs`
 
-Always ensure your larger dialogs have a scroll in its content to ensure that its content fits the screen size. Make sure that the content is not cut off from the screen.
+Headed Playwright, no new dependency (it uses the global install, same import
+path as `shot-fly.mjs`). Start `bun run dev` first.
 
-Ideally, instead of using a new page, use a Dialog instead. 
+```bash
+bun scripts/live.mjs                # scripted play-through -> screenshots + trace
+bun scripts/live.mjs --watch 3      # you play, it samples every ~3s
+```
 
-# Using the Convex backend
+The scripted run writes `shots/live/trace.zip` — scrub the whole run with
+`npx playwright show-trace shots/live/trace.zip`. `--watch` instead appends one
+JSON line per sample to `shots/live/telemetry.jsonl` plus
+`shots/live/latest.png`; no trace, deliberately, since Playwright only records
+actions it issues itself.
 
-You will be implementing the convex backend. Follow your knowledge of convex and the documentation to implement the backend.
+Telemetry reads `window.__game` — the same bridge `Hud.tsx` polls — so the
+numbers are the numbers on screen. It is exposed only under
+`import.meta.env.DEV`, so this works against the dev server and never a
+production bundle.
 
-## The Convex Schema
+`bun scripts/shot-fly.mjs` is a smaller scratch harness that screenshots the
+admin-power toggle in both states.
 
-You must correctly follow the convex schema implementation.
+**Known issue:** every run logs
+`GL_INVALID_OPERATION: Vertex buffer is not big enough for the draw call`
+repeatedly on `/dashboard`. It does not visibly break the frame, but it is a
+real error.
 
-The schema is defined in `src/convex/schema.ts`.
+The harness's own capture taxes the game (~9 fps average under
+headed-Chromium-under-automation). That is not a verdict on the engine —
+measure real performance in your own browser before optimising against it.
 
-Do not include the `_id` and `_creationTime` fields in your queries (it is included by default for each table).
-Do not index `_creationTime` as it is indexed for you. Never have duplicate indexes.
+## Frontend conventions
 
+These are the product conventions. Follow them for any UI work.
 
-## Convex Actions: Using CRUD operations
+### Pages and components
 
-When running anything that involves external connections, you must use a convex action with "use node" at the top of the file.
+- Pages in `src/pages`, components in `src/components`, shadcn primitives in
+  `src/components/ui` (use by default).
+- Register every new page in the router in `src/main.tsx`.
+- Wrap pages in a container so they don't stretch on wide screens, centred,
+  and **always mobile responsive** — verify max/min widths, don't assume.
+- Navbars for landing pages, sidebars for protected dashboard pages. The logo
+  on either bar links to the index page.
+- Clickable elements get `cursor-pointer` (it is not the default).
 
-You cannot have queries or mutations in the same file as a "use node" action file. Thus, you must use pre-built queries and mutations in other files.
+### shadcn/ui
 
-You can also use the pre-installed internal crud functions for the database:
+- Title text uses `tracking-tight font-bold`.
+- **Avoid nested cards.** Cards inside cards, borders inside borders — it
+  clutters the page.
+- **Avoid shadows.** Use a thin border instead.
+- Avoid skeletons; use the `loader2` spinner for loading states.
+- Larger dialogs must scroll internally so content is never cut off on small
+  screens. Prefer a Dialog over a whole new page for secondary content.
+
+### Landing pages
+
+Designer-level styling, well animated, with a coherent theme (neo-brutalist,
+retro, neumorphism, glass morphism…). If the user is signed in, the primary
+button should say "Dashboard" or "Profile" and go there.
+
+### Animation
+
+Use Framer Motion (`motion` from `framer-motion`) for fades, slide-ins,
+rendering animations, button clicks, and UI elements. Animate across the app,
+landing page included.
+
+### Three.js in the app
+
+The world is **imperative vanilla three.js mounted from a React effect**.
+`src/engine/*` builds a scene graph directly, so wrapping world geometry in
+React Three Fiber would mean rewriting the engine, not adapting it.
+
+### Colours and theming
+
+Tokens are oklch CSS variables in `src/index.css`, set with the `dark` /
+`light` class on a parent. Always use the variable names; avoid hardcoded hex
+unless a value is a genuinely fixed material colour (a sea shader, a 3D
+texture). Components must work in both light and dark mode. When changing the
+theme, change it app-wide: the shadcn primitives under `src/components/ui` and
+the colours in `index.css`. Do not override colours locally in a component.
+
+### The hand-drawn theme already exists
+
+`src/index.css` defines a custom utility vocabulary for this app's look. Use
+it instead of inventing near-duplicates:
+
+`display` · `hand` · `note` · `ruled` · `ruled-tight` · `sketch` ·
+`sketch-soft` · `sticky-note` · `index-card` · `tape` · `stamp` ·
+`check-box` · `ink-shadow` · `ink-shadow-sm`
+
+plus `--font-hand` (Caveat) and `--font-note` (Patrick Hand).
+`src/components/BeachSketch.tsx` is pure inline SVG — the house approach to
+illustration. No image assets.
+
+### Toasts
+
+Report results — confirmations, errors, outcomes — with a toast, using the
+shadcn Sonner toaster:
 
 ```ts
-// in convex/users.ts
-import { crud } from "convex-helpers/server/crud";
-import schema from "./schema.ts";
+import { toast } from "sonner";
 
-export const { create, read, update, destroy } = crud(schema, "users");
-
-// in some file, in an action:
-const user = await ctx.runQuery(internal.users.read, { id: userId });
-
-await ctx.runMutation(internal.users.update, {
-  id: userId,
-  patch: {
-    status: "inactive",
-  },
+toast("Event has been created", {
+  description: "Sunday, December 03, 2023 at 9:00 AM",
+  action: { label: "Undo", onClick: () => console.log("Undo") },
 });
 ```
 
+## Removed — do not reintroduce
 
-## Common Convex Mistakes To Avoid
+**There is no backend.** The Convex backend and the whole auth flow were
+removed on 2026-09-29 (`a72552c`). There is no `ConvexAuthProvider`, no
+`useAuth`, no `RequireAuth`, no `VITE_CONVEX_URL`, and `/dashboard` is public.
+If a future task needs persistence or accounts, that is a fresh decision — do
+not reintroduce Convex by reflex or assume the wiring still exists.
 
-When using convex, make sure:
-- Document IDs are referenced as `_id` field, not `id`.
-- Document ID types are referenced as `Id<"TableName">`, not `string`.
-- Document object types are referenced as `Doc<"TableName">`.
-- Keep schemaValidation to false in the schema file.
-- You must correctly type your code so that it passes the type checker.
-- You must handle null / undefined cases of your convex queries for both frontend and backend, or else it will throw an error that your data could be null or undefined.
-- Always use the `@/folder` path, with `@/convex/folder/file.ts` syntax for importing convex files.
-- This includes importing generated files like `@/convex/_generated/server`, `@/convex/_generated/api`
-- Remember to import functions like useQuery, useMutation, useAction, etc. from `convex/react`
-- NEVER have return type validators.
+Also out of scope unless deliberately reopened: Google Earth imagery
+(forbidden by Google's terms in three separate ways), a build-time OSM/DEM
+height pipeline, and any "true to scale" claim. Sentinel-2 (10 m/px) is the
+open-licence imagery fallback if real imagery is ever genuinely needed.
+
+## Where to look next
+
+- [`docs/NEXT-SESSION.md`](docs/NEXT-SESSION.md) — current state, the Open
+  Buildings decode blocker, known bugs, what is still open.
+- [`docs/height-sources.md`](docs/height-sources.md) — the height research.
+- [`AGENTS.md`](AGENTS.md) — workflow rules for agents working in this repo.
