@@ -459,7 +459,7 @@ function gulmohar(g: THREE.Group, x: number, z: number, scale: number) {
     const colour = roll < 0.34 ? PAL.gulmoharDeep : roll < 0.74 ? PAL.gulmohar : PAL.gulmoharLeaf;
     const blob = new THREE.Mesh(
       new THREE.IcosahedronGeometry(rad, 0),
-      cel({ color: colour, bands: 3, flat: true }),
+      cel({ color: colour, bands: 3 }),
     );
     blob.position.set(
       Math.cos(a) * rr,

@@ -17,8 +17,8 @@
 
 import * as THREE from "three";
 import { cel, flat } from "../engine/toon.js";
-import { PAL } from "../engine/palette.js";
-import { ORIGIN, TILE_M, tileOf, toLocal } from "./geo-constants.js";
+import { TILE_M, tileOf } from "./geo-constants.js";
+import { fetchData } from "./data-path.js";
 
 /** A render building: footprint ring(s) in local metres + resolved height. */
 interface RenderBuilding {
@@ -38,8 +38,22 @@ interface RenderBuilding {
   src: string;
 }
 
+/** What a chunk file parses to. */
+interface ChunkData {
+  b?: RenderBuilding[];
+  s?: StreetFeature[];
+}
+
+/** Where chunks come from, in order. See src/geo/data-path.ts. */
+async function fetchChunk(name: string): Promise<ChunkData | null> {
+  return fetchData<ChunkData>(`chunks/chunk_${name}.json`);
+}
+
 /** Facade-class geometry, generated from a real footprint ring. */
-function buildingGeometry(ring: [number, number][], height: number, cls: string, rnd: () => number): THREE.BufferGeometry {
+function buildingGeometry(
+  ring: [number, number][],
+  height: number,
+): THREE.BufferGeometry {
   // Extrude the REAL footprint ring into a prism, 1 unit = 1 m.
   //
   // The shape is built in the ring's own coordinates: shape-X = world X,
@@ -57,7 +71,10 @@ function buildingGeometry(ring: [number, number][], height: number, cls: string,
   const shape = new THREE.Shape();
   shape.moveTo(ring[0][0], ring[0][1]);
   for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], ring[i][1]);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: false,
+  });
   geo.rotateX(Math.PI / 2);
   geo.translate(0, height, 0);
   return geo;
@@ -75,20 +92,38 @@ const MATERIAL_POOL = new Map<string, THREE.Material>();
 function materialFor(cls: string): THREE.Material {
   const existing = MATERIAL_POOL.get(cls);
   if (existing) return existing;
-  const created = cel({ color: 0xffffff, vertexColors: true, bands: 3, cache: false }) as THREE.Material;
+  const created = cel({
+    color: 0xffffff,
+    vertexColors: true,
+    bands: 3,
+    cache: false,
+  }) as THREE.Material;
   MATERIAL_POOL.set(cls, created);
   return created;
 }
 
+/** Hard ceiling on how far geometry is ever drawn, whatever the altitude. */
+export const MAX_RENDER_DISTANCE = 9000;
+
 export class GeoCity {
   private scene: THREE.Scene;
-  private chunks: Map<string, { group: THREE.Group; meshes: (THREE.Mesh | THREE.LineSegments)[] }>;
+  private chunks: Map<string, ChunkEntry>;
   private loadRadius: number;
   private cache: Map<string, unknown>;
   private loadedCentres: number[];
   readonly group: THREE.Group;
-  /** Chunks whose fetch/build is in flight — prevents duplicate requests. */
+  /** Chunks whose fetch is in flight — prevents duplicate requests. */
   private loading = new Set<string>();
+  /**
+   * Chunks fetched and WAITING to be built.
+   *
+   * This set is the difference between 11 fps and 60. `ensureAround` runs every
+   * frame and a chunk is not in `this.chunks` until its geometry is built, which
+   * takes ~13 ms. Without this set, every queued-but-unbuilt chunk was
+   * re-fetched and re-queued on every single frame: measured 440 queue entries
+   * and 386 MB of heap at Andheri, with 8 chunks actually resident.
+   */
+  private queued = new Set<string>();
   /** Chunks fetched and waiting for time-sliced geometry construction. */
   private queue: BuildJob[] = [];
   private _sliceStart = 0;
@@ -96,12 +131,19 @@ export class GeoCity {
   private _m4 = new THREE.Matrix4();
   private _frustum = new THREE.Frustum();
   private _box = new THREE.Box3();
+  private _near = new THREE.Vector3();
+  private maxDistance: number;
 
-  constructor(scene: THREE.Scene, camera: THREE.PerspectiveCamera, opts: { loadRadius?: number } = {}) {
+  constructor(
+    scene: THREE.Scene,
+    camera: THREE.PerspectiveCamera,
+    opts: { loadRadius?: number; maxDistance?: number } = {},
+  ) {
     this.scene = scene;
     this.camera = camera;
     this.chunks = new Map();
     this.loadRadius = opts.loadRadius ?? 3;
+    this.maxDistance = opts.maxDistance ?? 6000;
     this.cache = new Map();
     this.loadedCentres = [];
     this.group = new THREE.Group();
@@ -109,16 +151,77 @@ export class GeoCity {
     scene.add(this.group);
   }
 
-  /** Does this chunk's tile box intersect the camera frustum? */
+  /**
+   * Is this chunk worth having at all: inside the frustum AND inside the
+   * distance budget?
+   *
+   * The frustum alone is not a render distance. Standing still on a footpath,
+   * the frustum reaches 9 km — past the far plane of useful detail — and every
+   * chunk inside it gets fetched, built and merged. The distance cap is what
+   * makes the number of resident chunks a function of how much you can actually
+   * see, and it is applied here, before the fetch, not after the geometry
+   * already exists.
+   */
   private frustumHitsTile(key: string): boolean {
     const [gx, gy] = key.split(",").map(Number);
     const half = TILE_M / 2;
     this._box.min.set(gx * TILE_M - half, -1, gy * TILE_M - half);
     this._box.max.set(gx * TILE_M + half, 260, gy * TILE_M + half);
+    // Distance to the NEAREST point of the tile, not its centre, so a tile you
+    // are standing on the edge of is not culled by its far corner.
+    this._near.copy(this._box.min);
+    this._box.clampPoint(this.camera.position, this._near);
+    if (this.camera.position.distanceTo(this._near) > this.maxDistance)
+      return false;
+    this._m4.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse,
+    );
+    this._frustum.setFromProjectionMatrix(this._m4);
     return this._frustum.intersectsBox(this._box);
   }
 
+  /**
+   * Move the render distance. The caller sets this from the camera's altitude,
+   * so standing on a footpath keeps the city tight and climbing opens it out —
+   * without the player ever seeing a number or a setting.
+   */
+  setMaxDistance(metres: number): void {
+    const clamped = Math.max(1200, Math.min(MAX_RENDER_DISTANCE, metres));
+    if (clamped === this.maxDistance) return;
+    this.maxDistance = clamped;
+    // Keep the ring just wide enough to cover the budget, and never wider: a
+    // radius of 4 costs 81 tiles for the sake of a few at the edge.
+    this.loadRadius = Math.max(1, Math.min(3, Math.ceil(clamped / TILE_M) + 1));
+  }
+
+  get renderDistance(): number {
+    return this.maxDistance;
+  }
+
+  /**
+   * Only chunks within this distance cast shadows.
+   *
+   * Beyond it a 2048 shadow map cannot resolve a 20 m building anyway, so
+   * casting them is a second full geometry pass for nothing. Recomputed when
+   * the distance changes rather than per frame per chunk — the resident set is
+   * small and the change is rare.
+   */
+  setShadowDistance(metres: number): void {
+    if (metres === this.shadowDistance) return;
+    this.shadowDistance = metres;
+    for (const chunk of this.chunks.values()) {
+      chunk.group.getWorldPosition(this._near);
+      const casts = this._near.distanceTo(this.camera.position) <= metres;
+      for (const m of chunk.meshes) m.castShadow = casts;
+    }
+  }
+
+  private shadowDistance = -1;
+
   async ensureAround(x: number, z: number): Promise<void> {
+    // The frustum is recomputed inside frustumHitsTile for each candidate; the
+    // camera matrices are already current because render() ran last frame.
     const { gx: cx, gy: cy } = tileOf(x, z);
     const wanted = new Set<string>();
     for (let dx = -this.loadRadius; dx <= this.loadRadius; dx++) {
@@ -126,16 +229,25 @@ export class GeoCity {
         wanted.add(`${cx + dx},${cy + dz}`);
       }
     }
-    // drop far chunks
+    // Drop what is out of range, and drop what is still QUEUED but no longer
+    // wanted — otherwise flying forward leaves a tail of chunks that will be
+    // built, thrown away, and never seen.
     for (const key of this.chunks.keys()) {
       if (!wanted.has(key)) this.disposeChunk(key);
+    }
+    if (this.queue.length) {
+      this.queue = this.queue.filter((j) => {
+        if (wanted.has(j.key)) return true;
+        this.queued.delete(j.key);
+        return false;
+      });
     }
     // Chunk-level frustum cull: skip loading anything the camera cannot see.
     // Roughly a quarter of the resident grid is behind you at any moment, and
     // this runs before the (expensive) fetch+build rather than after.
-    const frustum = this.frustumFor(x, z);
     for (const key of wanted) {
-      if (this.chunks.has(key) || this.loading.has(key)) continue;
+      if (this.chunks.has(key) || this.loading.has(key) || this.queued.has(key))
+        continue;
       if (!this.frustumHitsTile(key)) continue;
       this.loading.add(key);
       // fire-and-forget: the render loop must never await a fetch. The guard
@@ -146,26 +258,15 @@ export class GeoCity {
     }
   }
 
-  /** A frustum in world space, for whole-tile rejection. */
-  private frustumFor(x: number, z: number): THREE.Frustum {
-    this._m4.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse);
-    this._frustum.setFromProjectionMatrix(this._m4);
-    return this._frustum;
-  }
-
   async loadChunk(key: string): Promise<void> {
     try {
       const [gx, gy] = key.split(",").map(Number);
-      const url = `data/build/chunks/chunk_${gx}_${gy}.json`;
-      const res = await fetch(url);
-      // Vite's dev SPA fallback answers a missing chunk with 200 text/html
-      // (index.html), not a 404 — so `res.ok` is NOT enough. Check the type.
-      const type = res.headers.get("content-type") || "";
-      if (!res.ok || !type.includes("json")) return; // empty tile / not a chunk
-      const data = (await res.json()) as { b?: RenderBuilding[]; s?: StreetFeature[] };
+      const data = await fetchChunk(`${gx}_${gy}`);
+      if (!data) return; // empty tile / outside the slice
       // Enqueue rather than build inline: ~265 ExtrudeGeometry + merge in one
       // task is a visible stutter while flying fast. The queue is drained a few
       // ms at a time in tick(), and is the exact seam a worker drops into.
+      this.queued.add(key);
       this.queue.push({ key, data });
     } catch (e) {
       // A missing/empty tile is normal at the metro edge; never break the loop.
@@ -218,12 +319,13 @@ export class GeoCity {
       const cls = b.t || "residential";
       // One merged mesh per class per chunk = one draw call per class per
       // chunk, which is what keeps the whole city cheap.
-      const geo = buildingGeometry(b.r, b.H, cls, Math.random);
+      const geo = buildingGeometry(b.r, b.H);
       this.paintGeometry(geo, this.facadeColor(cls, b, Math.random));
       const bucket = st.byClass.get(cls);
       if (bucket) bucket.push(geo);
       else st.byClass.set(cls, [geo]);
-      if (st.i % batch === 0 && performance.now() - this._sliceStart > 6) return true;
+      if (st.i % batch === 0 && performance.now() - this._sliceStart > 6)
+        return true;
     }
 
     // finalise: merge each class, attach streets, freeze transforms
@@ -252,8 +354,44 @@ export class GeoCity {
     st.group.traverse((o) => {
       o.matrixAutoUpdate = false;
     });
-    this.chunks.set(job.key, { group: st.group, meshes });
+    this.chunks.set(job.key, {
+      group: st.group,
+      meshes,
+      list,
+      boxes: buildBroad(list),
+    });
     return false;
+  }
+
+  /**
+   * Every building footprint whose ring could reach within `radius` of a point.
+   *
+   * This is the walker's broad phase. It is deliberately two-stage: a tight
+   * numeric scan over precomputed boxes (cheap across all ~13k resident
+   * buildings), then the caller's exact ring test on the handful that survive.
+   * The exact test is what matters — an AABB per building would put an invisible
+   * wall in the middle of the road for any concave footprint, because Mumbai's
+   * local streets are only 7 m kerb to kerb.
+   */
+  forEachBuildingNear(
+    x: number,
+    z: number,
+    radius: number,
+    fn: (b: RenderBuilding) => void,
+  ): number {
+    let hits = 0;
+    for (const entry of this.chunks.values()) {
+      const box = entry.boxes;
+      for (let i = 0; i < box.length; i += 3) {
+        const dx = box[i] - x;
+        const dz = box[i + 1] - z;
+        const reach = radius + box[i + 2];
+        if (dx * dx + dz * dz > reach * reach) continue;
+        fn(entry.list[i / 3]);
+        hits++;
+      }
+    }
+    return hits;
   }
 
   facadeColor(cls: string, b: RenderBuilding, rnd: () => number): THREE.Color {
@@ -265,7 +403,8 @@ export class GeoCity {
     else if (cls === "commercial") base = rnd() > 0.5 ? 0x8f9bb0 : 0xa8b0bd;
     else if (cls === "institutional") base = 0xc9c0ae;
     else if (cls === "religious") base = 0xd8c7a0;
-    else if (/apartment|terrace|residential/.test(t)) base = rnd() > 0.5 ? 0xc9a98a : 0xbfa88f;
+    else if (/apartment|terrace|residential/.test(t))
+      base = rnd() > 0.5 ? 0xc9a98a : 0xbfa88f;
     else base = rnd() > 0.5 ? 0xd6c4a4 : 0xcdb894; // residential/chawl default
     const c = new THREE.Color(base);
     c.multiplyScalar(0.94 + rnd() * 0.12); // subtle per-building variation
@@ -291,6 +430,7 @@ export class GeoCity {
   }
 
   disposeChunk(key: string): void {
+    this.queued.delete(key);
     const entry = this.chunks.get(key);
     if (!entry) return;
     this.group.remove(entry.group);
@@ -306,6 +446,15 @@ export class GeoCity {
   get loadedChunks(): number {
     return this.chunks.size;
   }
+
+  /** Drop every resident chunk. Called on unmount, not during play. */
+  dispose(): void {
+    for (const key of [...this.chunks.keys()]) this.disposeChunk(key);
+    this.cache.clear();
+    this.loading.clear();
+    this.queued.clear();
+    this.queue.length = 0;
+  }
 }
 
 interface BuildJob {
@@ -318,7 +467,49 @@ interface BuildJob {
   };
 }
 
-interface StreetFeature { id: string; p: [number, number][][]; n: string | null; c: number | null; w: number | null; }
+/** A resident chunk: its meshes, and the footprint data the walker collides with. */
+interface ChunkEntry {
+  group: THREE.Group;
+  meshes: (THREE.Mesh | THREE.LineSegments)[];
+  /** Raw footprints, retained for collision. ~13k buildings resident, trivial. */
+  list: RenderBuilding[];
+  /**
+   * Flat [cx, cz, span] per building, precomputed so the broad phase is a tight
+   * numeric loop instead of re-walking every ring each frame. `span` is the
+   * ring's radius about its centroid.
+   */
+  boxes: Float32Array;
+}
+
+/** StreetFeature shape carried in the chunk payload. */
+interface StreetFeature {
+  id: string;
+  p: [number, number][][];
+  n: string | null;
+  c: number | null;
+  w: number | null;
+}
+
+/**
+ * Precompute [cx, cz, span] per building for the walker's broad phase. The
+ * centroid `c` is already in the chunk data; `span` is the ring's radius about
+ * it, which is what makes the test conservative for an off-centre footprint.
+ */
+function buildBroad(list: RenderBuilding[]): Float32Array {
+  const out = new Float32Array(list.length * 3);
+  for (let i = 0; i < list.length; i++) {
+    const b = list[i];
+    let span = 0;
+    for (const p of b.r) {
+      const d = Math.hypot(p[0] - b.c[0], p[1] - b.c[1]);
+      if (d > span) span = d;
+    }
+    out[i * 3] = b.c[0];
+    out[i * 3 + 1] = b.c[1];
+    out[i * 3 + 2] = span;
+  }
+  return out;
+}
 
 /**
  * The surface layer: ground, road ribbons, kerbs, footpaths, markings.
@@ -339,7 +530,13 @@ const FOOTPATH_W = 1.8;
 class Strip {
   pos: number[] = [];
   /** Push a horizontal quad from two edges. */
-  quad(a: [number, number], b: [number, number], c: [number, number], d: [number, number], y: number) {
+  quad(
+    a: [number, number],
+    b: [number, number],
+    c: [number, number],
+    d: [number, number],
+    y: number,
+  ) {
     const p = this.pos;
     p.push(a[0], y, a[1], b[0], y, b[1], c[0], y, c[1]);
     p.push(a[0], y, a[1], c[0], y, c[1], d[0], y, d[1]);
@@ -353,7 +550,10 @@ class Strip {
 }
 
 /** Perpendicular offsets either side of a centreline, at the given half-width. */
-function ribbon(path: [number, number][], half: number): { l: [number, number][]; r: [number, number][] } | null {
+function ribbon(
+  path: [number, number][],
+  half: number,
+): { l: [number, number][]; r: [number, number][] } | null {
   if (path.length < 2) return null;
   const l: [number, number][] = [];
   const r: [number, number][] = [];
@@ -377,33 +577,19 @@ function ribbon(path: [number, number][], half: number): { l: [number, number][]
   return { l, r };
 }
 
-function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | null {
+function buildSurfaces(
+  key: string,
+  streets: StreetFeature[],
+): THREE.Group | null {
   const group = new THREE.Group();
   group.name = `surface_${key}`;
-  const [gx, gy] = key.split(",").map(Number);
 
-  // --- ground: one quad covering the whole tile, so the city has a floor ---
-  const half = TILE_M / 2;
-  const ground = new Strip();
-  ground.quad(
-    [gx * TILE_M - half, gy * TILE_M - half],
-    [gx * TILE_M - half, gy * TILE_M + half],
-    [gx * TILE_M + half, gy * TILE_M + half],
-    [gx * TILE_M + half, gy * TILE_M - half],
-    0,
-  );
-  const gg = ground.geometry();
-  if (gg) {
-    // A horizontal quad under a low sun lands in the toon ramp's DARKEST band
-    // and renders the whole floor near-black. Lighter the base colour well past
-    // the surface tone so even the shadow band stays a visible floor, and keep
-    // it lit so buildings still cast onto it — an unlit floor reads as a void.
-    const gm = new THREE.Mesh(gg, cel({ color: 0xd8d2c2, bands: 2 }));
-    gm.receiveShadow = true;
-    gm.renderOrder = -2;
-    group.add(gm);
-  }
-
+  // --- roads, kerbs, footpaths, markings --------------------------------
+  //
+  // There is deliberately NO ground quad here any more. Ground is the land
+  // mask in src/geo/water.ts, which knows where the harbour is; a full-tile
+  // quad cannot, and drew the Arabian Sea as land. The road stack sits above
+  // it: sea 0.00, land 0.05, road 0.08, markings 0.09, kerb 0.15.
   const road = new Strip();
   const kerb = new Strip();
   const foot = new Strip();
@@ -419,7 +605,7 @@ function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | nul
       if (!w) continue;
       for (let i = 0; i < w.l.length - 1; i++) {
         // carriageway
-        road.quad(w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.01);
+        road.quad(w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.08);
         // kerb faces, raised, either side
         const o = (v: [number, number], out: number): [number, number] => {
           const dx = v[0] - path[i][0];
@@ -443,7 +629,7 @@ function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | nul
         foot.quad(R1, R0, r0, r1, KERB_H);
         // centre line on arterials only
         if (isArterial) {
-          marks.quad(path[i], path[i + 1], path[i + 1], path[i], 0.02);
+          marks.quad(path[i], path[i + 1], path[i + 1], path[i], 0.09);
         }
       }
     }
@@ -452,11 +638,17 @@ function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | nul
   const add = (s: Strip, color: number, order: number) => {
     const g = s.geometry();
     if (!g) return;
-    const m = new THREE.Mesh(g, flat({ color, toneMapped: false }));
+    const m = new THREE.Mesh(
+      g,
+      flat({ color, toneMapped: false, side: THREE.DoubleSide }),
+    );
     m.receiveShadow = true;
     m.renderOrder = order;
     group.add(m);
   };
+  // Heights match src/geo/water.ts: ground 0, sea 0.05, road 0.08, marks 0.09.
+  // The road stack used to start at 0.01 and sat UNDER the sea ribbons, which
+  // drew causeways and the Sea Link beneath the water they cross.
   add(road, 0x54535a, -1);
   add(kerb, 0xcfcabb, 0);
   add(foot, 0xb9b3a4, 0);
@@ -479,7 +671,9 @@ function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | nul
  * chunk, allocating fresh Float32Arrays on every load is a GC hitch waiting to
  * happen while flying.
  */
-function mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | null {
+function mergeGeometries(
+  geos: THREE.BufferGeometry[],
+): THREE.BufferGeometry | null {
   if (!geos.length) return null;
 
   const indexed = geos.every((g) => !!g.index);
@@ -493,14 +687,19 @@ function mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | n
   const pos = new Float32Array(vertexTotal * 3);
   const nor = new Float32Array(vertexTotal * 3);
   const col = new Uint8Array(vertexTotal * 3);
-  const idx = indexed ? vertexTotal > 65535 ? new Uint32Array(indexTotal) : new Uint16Array(indexTotal) : null;
+  const idx = indexed
+    ? vertexTotal > 65535
+      ? new Uint32Array(indexTotal)
+      : new Uint16Array(indexTotal)
+    : null;
 
   let vOff = 0;
   let iOff = 0;
   for (const g of geos) {
     const n = g.attributes.position.count;
     pos.set(g.attributes.position.array as ArrayLike<number>, vOff * 3);
-    if (g.attributes.normal) nor.set(g.attributes.normal.array as ArrayLike<number>, vOff * 3);
+    if (g.attributes.normal)
+      nor.set(g.attributes.normal.array as ArrayLike<number>, vOff * 3);
     if (g.attributes.color) {
       const src = g.attributes.color.array as ArrayLike<number>;
       for (let i = 0; i < n * 3; i++) col[vOff * 3 + i] = src[i];
@@ -515,8 +714,10 @@ function mergeGeometries(geos: THREE.BufferGeometry[]): THREE.BufferGeometry | n
 
   const out = new THREE.BufferGeometry();
   out.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-  if (geos[0].attributes.normal) out.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
-  if (geos[0].attributes.color) out.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
+  if (geos[0].attributes.normal)
+    out.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  if (geos[0].attributes.color)
+    out.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
   if (idx) out.setIndex(new THREE.BufferAttribute(idx, 1));
   out.computeBoundingSphere();
   return out;

@@ -8,7 +8,9 @@ import "./index.css";
 
 // Lazy load route components for better code splitting
 const Landing = lazy(() => import("./pages/Landing.tsx"));
-const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
+const City = lazy(() => import("./pages/City.tsx"));
+const Station = lazy(() => import("./pages/Station.tsx"));
+const MapPage = lazy(() => import("./pages/MapPage.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
 // Simple loading fallback for route transitions
@@ -111,7 +113,13 @@ createRoot(document.getElementById("root")!).render(
         <Suspense fallback={<RouteLoading />}>
           <Routes>
             <Route path="/" element={<Landing />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            {/* /dashboard is the real, data-sourced Greater Mumbai. The authored
+                station moved to /station when it took over. */}
+            <Route path="/dashboard" element={<City />} />
+            <Route path="/station" element={<Station />} />
+            {/* The whole city on one page: land, roads, places, at a size where
+                a missing district is obvious. */}
+            <Route path="/map" element={<MapPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>

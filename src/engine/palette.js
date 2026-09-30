@@ -28,6 +28,9 @@ export const PAL = {
   fog: 0xf0dcb4,         // warm haze, matches the horizon
 
   // ---- ground -----------------------------------------------------------
+  groundLand: 0xd8d2c2,    // unlit land base under every tile (never toon-lit)
+  sea: 0x4d7f96,          // harbour + open ocean; flat, tone-mapping off
+  seaDeep: 0x2f5a72,      // the one accent that reads at planet scale
   road: 0x3c3e4c,        // measured: the dominant asphalt tone
   roadLight: 0x555a6b,
   kerbPaint: 0xf2c33c,   // the yellow half of black-and-yellow kerbs

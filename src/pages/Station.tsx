@@ -2,10 +2,10 @@ import { Hud } from "@/mumbai/Hud";
 import MumbaiWorld from "@/mumbai/MumbaiWorld";
 
 /**
- * The product: a full-screen, walkable cel-shaded 3D model of a Mumbai
- * Western line station district. Public — no sign-in.
+ * The authored Western line station district. It moved here from /dashboard
+ * when the real city took that route; the world itself is unchanged.
  */
-export default function Dashboard() {
+export default function Station() {
   return (
     <main className="relative h-[100dvh] w-full overflow-hidden bg-background">
       <MumbaiWorld />

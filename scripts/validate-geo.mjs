@@ -54,7 +54,9 @@ function streetsNear(lon, lat, radius) {
       if (!ch) continue;
       for (const s of ch.s || []) {
         // a street "counts" if any vertex is within radius of the site
-        const near = (s.p || []).some((p) => p.some(([x, y]) => Math.hypot(x - c.x, y - c.y) <= radius));
+        const near = (s.p || []).some((p) =>
+          p.some(([x, y]) => Math.hypot(x - c.x, y - c.y) <= radius),
+        );
         if (near) {
           total++;
           if (s.n) named++;
@@ -71,7 +73,9 @@ function main() {
   let fail = 0;
   const failures = [];
 
-  console.log(`Validating ${VALIDATION_SITES.length} sites (radius ${radius} m)\n`);
+  console.log(
+    `Validating ${VALIDATION_SITES.length} sites (radius ${radius} m)\n`,
+  );
 
   for (const site of VALIDATION_SITES) {
     const bl = buildingsNear(site.lon, site.lat, radius);
@@ -86,7 +90,8 @@ function main() {
     const noH = bl.filter((b) => !(b.H > 0));
     if (noH.length) problems.push(`${noH.length} buildings with no height`);
     if (st.total === 0) problems.push("no streets within radius");
-    if (st.total > 0 && st.named === 0) problems.push("streets present but none named");
+    if (st.total > 0 && st.named === 0)
+      problems.push("streets present but none named");
 
     const status = problems.length === 0 ? "ok  " : "FAIL";
     console.log(
@@ -98,10 +103,13 @@ function main() {
     } else pass++;
   }
 
-  console.log(`\ngeo validation: ${pass} pass, ${fail} fail of ${VALIDATION_SITES.length}`);
+  console.log(
+    `\ngeo validation: ${pass} pass, ${fail} fail of ${VALIDATION_SITES.length}`,
+  );
   if (failures.length) {
     console.log("\nfailures:");
-    for (const f of failures) console.log(`  ${f.id}: ${f.problems.join("; ")}`);
+    for (const f of failures)
+      console.log(`  ${f.id}: ${f.problems.join("; ")}`);
     process.exit(1);
   }
 }

@@ -19,7 +19,15 @@
 
 import { writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { toLocal, allTiles, tileBounds, TILE_M, METRO_BOUNDS, ringAreaM2, centroid } from "./geo.mjs";
+import {
+  toLocal,
+  allTiles,
+  tileBounds,
+  TILE_M,
+  METRO_BOUNDS,
+  ringAreaM2,
+  centroid,
+} from "./geo.mjs";
 
 const BASE =
   "https://services7.arcgis.com/8phUg7DrlXpKgLyA/ArcGIS/rest/services/Mumbai_WFL1/FeatureServer";
@@ -116,7 +124,14 @@ async function buildTile(t, wantLayers, fields) {
   const outObj = { buildings: [], streets: [], points: [] };
 
   if (wantLayers.includes("buildings")) {
-    const feats = await queryTile(LAYERS.buildings, b.x0, b.y0, b.x1, b.y1, fields.buildings);
+    const feats = await queryTile(
+      LAYERS.buildings,
+      b.x0,
+      b.y0,
+      b.x1,
+      b.y1,
+      fields.buildings,
+    );
     for (const f of feats) {
       const poly = esriToGeoJSON(f.geometry);
       if (!poly) continue;
@@ -144,7 +159,14 @@ async function buildTile(t, wantLayers, fields) {
   }
 
   if (wantLayers.includes("streets")) {
-    const feats = await queryTile(LAYERS.streets, b.x0, b.y0, b.x1, b.y1, fields.streets);
+    const feats = await queryTile(
+      LAYERS.streets,
+      b.x0,
+      b.y0,
+      b.x1,
+      b.y1,
+      fields.streets,
+    );
     for (const f of feats) {
       const paths = esriToGeoJSON(f.geometry);
       if (!paths) continue;
@@ -163,11 +185,23 @@ async function buildTile(t, wantLayers, fields) {
   }
 
   if (wantLayers.includes("points")) {
-    const feats = await queryTile(LAYERS.points, b.x0, b.y0, b.x1, b.y1, fields.points);
+    const feats = await queryTile(
+      LAYERS.points,
+      b.x0,
+      b.y0,
+      b.x1,
+      b.y1,
+      fields.points,
+    );
     for (const f of feats) {
       const p = esriToGeoJSON(f.geometry);
       if (!p) continue;
-      outObj.points.push({ id: `p${f.attributes.OBJECTID}`, src: "mumbai_wfl1_points", osm_id: f.attributes.osm_id || null, point: p[0] });
+      outObj.points.push({
+        id: `p${f.attributes.OBJECTID}`,
+        src: "mumbai_wfl1_points",
+        osm_id: f.attributes.osm_id || null,
+        point: p[0],
+      });
     }
     rec.points = outObj.points.length;
   }
@@ -175,9 +209,16 @@ async function buildTile(t, wantLayers, fields) {
 }
 
 async function main() {
-  const wantLayers = (argVal("--layers") || "buildings,streets,points").split(",");
+  const wantLayers = (argVal("--layers") || "buildings,streets,points").split(
+    ",",
+  );
   const tileFilter = argVal("--tiles")
-    ? new Set(argVal("--tiles").split(";").map((s) => s.trim()).filter(Boolean))
+    ? new Set(
+        argVal("--tiles")
+          .split(";")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      )
     : null;
   const workers = parseInt(argVal("--concurrency") || "6", 10);
   const force = args.includes("--force");
@@ -185,32 +226,83 @@ async function main() {
   if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true });
 
   const fields = {
-    buildings: ["OBJECTID", "osm_id", "type", "fclass", "name", "districtname", "subdistrictname", "Shape__Area"],
-    streets: ["OBJECTID", "FULL_STREET_NAME", "STREET_TYPE", "HIERARCHY", "ROAD_CLASS", "Shape__Length"],
+    buildings: [
+      "OBJECTID",
+      "osm_id",
+      "type",
+      "fclass",
+      "name",
+      "districtname",
+      "subdistrictname",
+      "Shape__Area",
+    ],
+    streets: [
+      "OBJECTID",
+      "FULL_STREET_NAME",
+      "STREET_TYPE",
+      "HIERARCHY",
+      "ROAD_CLASS",
+      "Shape__Length",
+    ],
     points: ["OBJECTID", "osm_id", "XCoord", "YCoord"],
   };
 
-  let tiles = allTiles().filter((t) => !tileFilter || tileFilter.has(`${t.gx},${t.gy}`));
+  let tiles = allTiles().filter(
+    (t) => !tileFilter || tileFilter.has(`${t.gx},${t.gy}`),
+  );
   // resumable: skip tiles already written (unless --force)
   if (!force) {
-    tiles = tiles.filter((t) => !existsSync(join(OUT, `tile_${t.gx}_${t.gy}.json`)));
+    tiles = tiles.filter(
+      (t) => !existsSync(join(OUT, `tile_${t.gx}_${t.gy}.json`)),
+    );
   }
 
   const manifestPath = join(OUT, "manifest.json");
-  let manifest = { builtAt: new Date().toISOString(), tileM: TILE_M, bounds: METRO_BOUNDS, sources: {}, tiles: {} };
+  let manifest = {
+    builtAt: new Date().toISOString(),
+    tileM: TILE_M,
+    bounds: METRO_BOUNDS,
+    // The ODbL Attribution Guidelines want the credit "as part of the database
+    // ... within the data or metadata", not only in an app UI — these chunks
+    // are a Derivative Database and this file is the provenance record that
+    // travels with them.
+    attribution: "© OpenStreetMap contributors",
+    license: "ODbL 1.0",
+    licenseUrl: "https://opendatacommons.org/licenses/odbl/1-0/",
+    sources: {},
+    tiles: {},
+  };
   if (existsSync(manifestPath) && !force) {
-    try { manifest = JSON.parse(readFileSync(manifestPath, "utf8")); } catch {}
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    } catch {}
   }
+  // Re-stamped on every run, including a resumed one that loaded the old
+  // manifest above, so the notice cannot be lost by an incremental rebuild.
+  manifest.attribution = "© OpenStreetMap contributors";
+  manifest.license = "ODbL 1.0";
+  manifest.licenseUrl = "https://opendatacommons.org/licenses/odbl/1-0/";
   manifest.sources = {
-    buildings: { service: `${BASE}/2`, name: "Mumbai - Buildings (Mumbai_WFL1, OSM-derived)", licence: "ODbL 1.0 (OSM)" },
-    streets: { service: `${BASE}/1`, name: "Mumbai - Streets (TomTom/Esri via Mumbai_WFL1)" },
+    buildings: {
+      service: `${BASE}/2`,
+      name: "Mumbai - Buildings (Mumbai_WFL1, OSM-derived)",
+      licence: "ODbL 1.0 (OSM)",
+    },
+    streets: {
+      service: `${BASE}/1`,
+      name: "Mumbai - Streets (TomTom/Esri via Mumbai_WFL1)",
+    },
     points: { service: `${BASE}/0`, name: "Mumbai - Points (OSM-derived)" },
   };
 
-  console.error(`ingesting ${tiles.length} tiles with ${workers} workers (layers: ${wantLayers.join(",")})...`);
+  console.error(
+    `ingesting ${tiles.length} tiles with ${workers} workers (layers: ${wantLayers.join(",")})...`,
+  );
 
   let done = 0;
-  let totalBuildings = 0, totalStreets = 0, totalPoints = 0;
+  let totalBuildings = 0,
+    totalStreets = 0,
+    totalPoints = 0;
   const queue = [...tiles];
   const failed = [];
 
@@ -221,8 +313,15 @@ async function main() {
       const key = `${t.gx},${t.gy}`;
       try {
         const { rec, outObj } = await buildTile(t, wantLayers, fields);
-        if (outObj.buildings.length || outObj.streets.length || outObj.points.length) {
-          writeFileSync(join(OUT, `tile_${t.gx}_${t.gy}.json`), JSON.stringify(outObj));
+        if (
+          outObj.buildings.length ||
+          outObj.streets.length ||
+          outObj.points.length
+        ) {
+          writeFileSync(
+            join(OUT, `tile_${t.gx}_${t.gy}.json`),
+            JSON.stringify(outObj),
+          );
           manifest.tiles[key] = rec;
         }
         totalBuildings += rec.buildings;
@@ -233,7 +332,9 @@ async function main() {
       }
       done++;
       if (done % 25 === 0) {
-        process.stderr.write(`  ${done}/${tiles.length} tiles (b=${totalBuildings} s=${totalStreets} p=${totalPoints})\n`);
+        process.stderr.write(
+          `  ${done}/${tiles.length} tiles (b=${totalBuildings} s=${totalStreets} p=${totalPoints})\n`,
+        );
         writeFileSync(manifestPath, JSON.stringify(manifest, null, 2)); // checkpoint
       }
     }
@@ -241,11 +342,24 @@ async function main() {
 
   await Promise.all(Array.from({ length: workers }, worker));
 
-  manifest.totals = { buildings: totalBuildings, streets: totalStreets, points: totalPoints };
+  manifest.totals = {
+    buildings: totalBuildings,
+    streets: totalStreets,
+    points: totalPoints,
+  };
   manifest.failed = failed;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-  console.log(`\nDONE. buildings=${totalBuildings} streets=${totalStreets} points=${totalPoints} failed=${failed.length}`);
-  if (failed.length) console.log("failed tiles (rerun to retry):", failed.slice(0, 10).map((f) => f.key).join(" "));
+  console.log(
+    `\nDONE. buildings=${totalBuildings} streets=${totalStreets} points=${totalPoints} failed=${failed.length}`,
+  );
+  if (failed.length)
+    console.log(
+      "failed tiles (rerun to retry):",
+      failed
+        .slice(0, 10)
+        .map((f) => f.key)
+        .join(" "),
+    );
   console.log(`manifest -> ${manifestPath}`);
 }
 

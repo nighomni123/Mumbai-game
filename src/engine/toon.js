@@ -90,7 +90,6 @@ export function cel(opts = {}) {
     color = 0xffffff,
     bands = 3,
     tint = 0x6c5f8c,
-    flat = true,
     map = null,
     emissive = null,
     emissiveIntensity = 1,
@@ -106,7 +105,7 @@ export function cel(opts = {}) {
   } = opts;
 
   const key = cache && !map && !alphaMap
-    ? [color, bands, tint, flat, emissive, emissiveIntensity, transparent,
+    ? [color, bands, tint, emissive, emissiveIntensity, transparent,
        opacity, side, alphaTest, depthWrite, fog, vertexColors].join('|')
     : null;
   if (key && matCache.has(key)) return matCache.get(key);
@@ -114,7 +113,6 @@ export function cel(opts = {}) {
   const mat = new THREE.MeshToonMaterial({
     color,
     gradientMap: gradientMap(bands),
-    flatShading: flat,
     map,
     alphaMap,
     transparent,

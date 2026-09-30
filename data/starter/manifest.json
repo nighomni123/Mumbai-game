@@ -1,0 +1,46 @@
+{
+  "what": "Starter slice of the Greater Mumbai world — Fort and its surroundings.",
+  "why": "A fresh clone has no data/build/ (git-ignored, ~155 MB). This slice makes `bun run dev` show a real city immediately; `bun run setup` regenerates the full metro.",
+  "attribution": "© OpenStreetMap contributors",
+  "license": "ODbL 1.0",
+  "licenseUrl": "https://opendatacommons.org/licenses/odbl/1-0/",
+  "derivedFromBuiltAt": "2026-09-29T17:27:15.699Z",
+  "generatedBy": "scripts/make-starter.mjs",
+  "centre": {
+    "name": "Fort",
+    "lon": 72.8345,
+    "lat": 18.933
+  },
+  "centreTile": {
+    "gx": -3,
+    "gy": -8
+  },
+  "radiusTiles": 2,
+  "tileM": 2000,
+  "chunks": [
+    "chunk_-5_-8.json",
+    "chunk_-5_-7.json",
+    "chunk_-5_-6.json",
+    "chunk_-4_-10.json",
+    "chunk_-4_-9.json",
+    "chunk_-4_-8.json",
+    "chunk_-4_-7.json",
+    "chunk_-4_-6.json",
+    "chunk_-3_-10.json",
+    "chunk_-3_-9.json",
+    "chunk_-3_-8.json",
+    "chunk_-3_-7.json",
+    "chunk_-3_-6.json",
+    "chunk_-2_-9.json",
+    "chunk_-2_-8.json",
+    "chunk_-2_-7.json",
+    "chunk_-2_-6.json",
+    "chunk_-1_-9.json",
+    "chunk_-1_-6.json"
+  ],
+  "layers": [
+    "landmask.json",
+    "citymap.json",
+    "water.json"
+  ]
+}

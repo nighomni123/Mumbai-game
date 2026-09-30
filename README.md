@@ -16,7 +16,7 @@ Tech stack:
 - **Vite** + **React 19** + **TypeScript**
 - **React Router v7** — import from `react-router`, not `react-router-dom`
 - **Tailwind v4** (oklch tokens) + **shadcn/ui** (`src/components/ui`)
-- **Three.js** — vanilla, *not* React Three Fiber
+- **Three.js** — vanilla, _not_ React Three Fiber
 - **Framer Motion** for UI animation
 - **Lucide** for icons, **Sonner** for toasts
 - **Hono** on Deno (`main.ts`) to serve the production `dist/`
@@ -42,12 +42,14 @@ client-side. The only optional ones are `VITE_VLY_APP_ID` /
 
 ## Routes and entry points
 
-| Path | What it is |
-|---|---|
-| `/` | Landing page (`src/pages/Landing.tsx`) |
-| `/dashboard` | The product — the 3D world, public, no sign-in (`src/pages/Dashboard.tsx`) |
-| `/world.html` | **Dev-only harness** — the `src/mumbai/` world with no React and no router |
-| `/geo.html` | **Dev-only harness** — the `src/geo/` city in free-fly mode |
+| Path          | What it is                                                                                               |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| `/`           | Landing page (`src/pages/Landing.tsx`)                                                                   |
+| `/dashboard`  | **The product** — real Greater Mumbai, walkable, with the whole-city map on **P** (`src/pages/City.tsx`) |
+| `/station`    | The authored Charni Road station district (`src/pages/Station.tsx`)                                      |
+| `/map`        | **The whole city on one page** — land, arterials, 33 places. For looking (`src/pages/MapPage.tsx`)       |
+| `/world.html` | **Dev-only harness** — the `src/mumbai/` world with no React and no router                               |
+| `/geo.html`   | **Dev-only harness** — the same real city, for diagnosis                                                 |
 
 Routes are declared in `src/main.tsx`. The two `.html` harnesses are not part
 of the product build; they exist so the 3D can be inspected in isolation
@@ -58,13 +60,13 @@ of the product build; they exist so the 3D can be inspected in isolation
 Do not conflate them. They are different products with different provenance
 and different licence obligations.
 
-| | `src/mumbai/` | `src/geo/` |
-|---|---|---|
-| What | Authored Charni Road station district | Data-sourced Greater Mumbai |
-| Data | Literals in source: station list, livery, signage, crowd | Real footprints ingested from Mumbai_WFL1 (OSM-derived) |
-| Scale | One station district, walkable at 1 unit = 1 m | Whole metro area, tiled and streamed |
-| Licence | None owed | **ODbL 1.0 attaches to the data** — see below |
-| Entry | `/world.html`, `/dashboard` | `/geo.html` (dev only; not wired to a route) |
+|         | `src/mumbai/`                                            | `src/geo/`                                              |
+| ------- | -------------------------------------------------------- | ------------------------------------------------------- |
+| What    | Authored Charni Road station district                    | Data-sourced Greater Mumbai                             |
+| Data    | Literals in source: station list, livery, signage, crowd | Real footprints ingested from Mumbai_WFL1 (OSM-derived) |
+| Scale   | One station district, walkable at 1 unit = 1 m           | Whole metro area, tiled and streamed                    |
+| Licence | None owed                                                | **ODbL 1.0 attaches to the data** — see below           |
+| Entry   | `/world.html`, `/station`                                | **`/dashboard`**, `/geo.html` (dev only)                |
 
 ### `src/mumbai/` — the station district
 
@@ -101,25 +103,88 @@ Canvas2D at runtime.
 
 ### `src/geo/` — the geographic city
 
-`src/geo/GeoCity.ts` is a tiled, streaming renderer. The whole city
+**Press P for the whole city.** The world streams ~13k buildings around the
+camera out of 260k, so most of Mumbai is only ever a number in a manifest;
+`P` puts the entire metro on screen, flat, over a frozen frame — drag to pan,
+wheel to zoom, click a place to travel there.
+
+That replaced a 3D planet, and the measurements that killed it are the reason
+this is worth writing down: the planet rendered 4.0M triangles and 58 draw calls
+for a view of 133,328 buildings at 4 m quantisation, it froze the chunk build
+queue at 440 entries because `drain()` is not called in that mode, and it was
+unreadable — the land mask it drew was wrong (see below), so the globe was two
+thirds empty ocean with a crescent of city stuck to one edge.
+
+`src/geo/GeoCity.ts` is the tiled, streaming renderer. The whole city
 (260k+ buildings) never lives in the GPU or in memory at once: chunks are 2 km
 squares, and the renderer keeps only the chunks near the camera, loads their
-JSON on demand, builds one `InstancedMesh` per facade class per chunk, and
-disposes chunks that fall out of range. Geometry is extruded from the real
-footprint rings at real local coordinates; facade variation is procedural and
+JSON on demand, merges the geometry per facade class per chunk, and disposes
+chunks that fall out of range. Geometry is extruded from the real footprint
+rings at real local coordinates; facade variation is procedural and
 Mumbai-specific but never moves or invents a building.
 
-`src/geo/preview.ts` is the dev harness: CREATIVE free-fly by default (`WASD`,
-`Space`/`Ctrl` up/down, `Shift` sprint, drag to look, double-click to toggle
-ORBIT), a live readout of chunks / draw calls / triangles / lon-lat /
-altitude, and `__geo.teleport('<place>')` for 24 real locations (`fort`,
-`charni`, `bkc`, `ghatkopar`, `powai`, `thane`, …). Read the counters before
-trusting any visual impression — a "1k tris" frame means nothing is being
-drawn.
+`src/geo/world.ts` is the product mount. `src/geo/walker.ts` is the on-foot
+controller — a deliberate port of `src/mumbai/player.ts` with the same movement
+constants, so both worlds feel like one product, differing only in that it
+collides against real OSM footprint rings instead of a hand-authored box list.
+Collision is exact (distance to the nearest ring edge), not AABB: local streets
+here are 7 m kerb to kerb, and an AABB per building puts an invisible wall in
+the middle of the road for any concave footprint.
+
+`src/geo/citymap.ts` is the other half of the world: a map of all of it.
+A 260k-building city that streams 13k around the camera is mostly invisible by
+construction, and a 3D globe is a poor way to answer "what is over there?". The
+minimap in the HUD and the `/map` page draw the entire metro from the same land
+mask, and the road skeleton from `scripts/citymap.mjs`. Clicking a place on
+either travels there by the same path the map's pins use — it is a way to
+choose a destination, not to skip the journey. `bun run check:map` asserts the
+geometry both renderers share.
+
+`src/geo/water.ts` is where the sea is. It did not exist before this work and
+its absence is why standing at CSMT showed no water to the west. See
+"The sea is a land mask" below.
+
+`src/geo/preview.ts` is the dev harness: it mounts the _same_ `world.ts`, then
+adds a live readout of chunks / draw calls / triangles / lon-lat / fps, plus
+`__geo.teleport('<place>')` for 33 real locations and `__geo.planet()`.
+Read the counters before trusting any visual impression — a "1k tris" frame
+means nothing is being drawn.
 
 **`scripts/geo.mjs` and `src/geo/geo-constants.ts` MUST stay in sync** (same
 `ORIGIN`, same `TILE_M`, same `METRO_BOUNDS`), or every building lands in the
 wrong place.
+
+## Where the land is, and where the sea is
+
+There was no water anywhere in the world before this. The world is now **sea by
+default, land where it is built** — a sea quad over the whole bounds, and a land
+mask laid on top 5 cm higher.
+
+The land mask is built from **the 260,890 building footprints**, not from the
+OSM coastline, and that took three attempts. All measured; the numbers are in
+`scripts/land-mask.mjs` and `scripts/validate-land.mjs`:
+
+| Attempt                                               | Land claimed          | 36 sites on land  | Verdict                                  |
+| ----------------------------------------------------- | --------------------- | ----------------- | ---------------------------------------- |
+| Wide strips on the seaward side of each coastline way | —                     | —                 | Thane, 23 km inland, read as sea         |
+| Scanline fill of the coastline                        | **4,161 km²**         | 36/36             | 76% of the bounds. Hard horizontal bands |
+| The same, bounded at 60 / 40 / 30 km                  | 2,001 / 637 / 279 km² | 26 / 24 / 23 / 36 | every one worse                          |
+| **Buildings, dilated 400 m**                          | **1,382 km²**         | **36/36**         | 13/13 water probes still water           |
+
+The coastline is not wrong where it exists — the parser loses nothing, verified
+against boxes the API does return. It is **absent** over the northern and eastern
+metro: the Panvel Creek shores and much of the Ulhas estuary are not in the
+extract, so 1,470 of 1,635 scanline rows ran out of coastline and the fallback
+painted land to the edge of the bounds.
+
+So the coastline is still fetched and still kept, as **provenance** — a better
+extract can be dropped in without re-deriving the pipeline — but nothing is
+drawn from it. `bun run check:water` checks it arrived intact; `bun run
+check:land` checks the thing the world is actually built from.
+
+The 400 m reach was chosen by measurement, not taste: it is the largest that
+leaves every water probe as water, and 1,382 km² is the closest of these to the
+real land area of the bounds.
 
 ## The data pipeline
 
@@ -129,8 +194,52 @@ regenerable**.
 ```bash
 node scripts/ingest-mumbai.mjs    # 1. paged, concurrent, resumable ingest
 node scripts/enrich-chunks.mjs    # 2. dedupe + heights + project to local metres
-node scripts/validate-geo.mjs     # 3. the geographic gate — run before styling
+node scripts/ingest-water.mjs     # 3. coastline + water -> the land mask
+node scripts/land-mask.mjs        # 4. the mask -> the sea surface + walker collision
+node scripts/citymap.mjs          # 5. the chunk set -> the map's road skeleton
+node scripts/validate-geo.mjs     # 6. the geographic gate — run before styling
+node scripts/validate-water.mjs   # 7. the sea gate — run before styling
 ```
+
+`ingest-water.mjs --merge-only` rebuilds `water.json` from the boxes already on
+disk and makes no network requests, so changing the mask algorithm does not
+mean re-fetching a gigabyte to test it.
+
+`bun run setup` runs steps 1-5 in order, for the full metro.
+
+### A fresh clone already has a city
+
+`data/build/` is ~155 MB and git-ignored, but **`data/starter/` is committed**:
+19 chunks covering Fort — where the walker starts — plus the land mask, the
+city map and the water. About 6 MB.
+
+So `git clone && bun install && bun run dev` gives you a real, walkable Mumbai
+with the harbour and the minimap, and no network at all. `bun run setup` builds
+the rest of the metro when you want to fly further. `src/geo/data-path.ts` is the
+only place that knows about the two roots; callers pass a path relative to the
+root (`"landmask.json"`) rather than spelling out `data/build/…`, because a
+hardcoded root is exactly how `landmask.json` ended up working in dev and
+missing from the production bundle.
+
+```bash
+node scripts/make-starter.mjs --force   # re-cut the slice from data/build/
+bun run check:starter                    # prove a fresh clone stands alone
+```
+
+`check:starter` **hides `data/build/`** for the duration of the run, loads the
+world in a real browser, and asserts geometry is resident, drawn, and that the
+land mask is present — then puts `data/build/` back. It needs the dev server up.
+Without it the fallback is never exercised on a working machine, and a break in
+it stays invisible until someone clones the repo.
+
+The slice is **uncompressed on purpose**: the loader then has one code path
+whether or not `data/build/` exists, rather than two formats to keep in sync.
+The full set gzips to ~29 MB (ratio 0.232), so if the payload ever needs
+shipping for real, compression is the lever — not a binary format.
+
+`data/starter/` carries its own `LICENCE` and `manifest.json` with the ODbL
+notice, because it is a Derivative Database being distributed. See "Data
+licensing" below.
 
 1. **`scripts/ingest-mumbai.mjs`** — paged, concurrent, resumable, retrying
    ingest from the public Mumbai_WFL1 ArcGIS FeatureServer. MCGM's own
@@ -140,7 +249,9 @@ node scripts/validate-geo.mjs     # 3. the geographic gate — run before stylin
 2. **`scripts/enrich-chunks.mjs`** — assigns every building to the tile that
    contains its **centroid** (so tile-straddling footprints are not
    double-counted), classifies facades, assigns heights, and projects WGS84
-   rings to the local metric frame. The raw WGS84 stays for provenance.
+   rings to the local metric frame. It then **deletes the raw `tile_*.json`
+   scratch it just consumed** — 222 MB, read exactly once, never read again. Pass
+   `--keep-scratch` to keep it, at the cost of the ingest's resume.
 3. **`scripts/validate-geo.mjs`** — the gate. Checks the built chunks against
    the source data and the 36 ground-truth sites in
    `scripts/validation-sites.mjs`, across all 24 required areas. Run it
@@ -150,10 +261,10 @@ node scripts/validate-geo.mjs     # 3. the geographic gate — run before stylin
 
 `height_source: "estimated"`, confidence capped at 0.45, by a documented
 per-class rule in `scripts/enrich-chunks.mjs` (zone prior plus a damped
-**non-monotonic** area term — in Mumbai a bigger footprint means a *shorter*
+**non-monotonic** area term — in Mumbai a bigger footprint means a _shorter_
 building). This is the biggest remaining quality gap.
 
-The measured source is **Google Open Buildings 2.5D Temporal**, which is *not*
+The measured source is **Google Open Buildings 2.5D Temporal**, which is _not_
 Earth-Engine-gated: its GCS bucket is publicly readable over anonymous HTTP.
 `scripts/ob_height.py` does the anonymous reads, manifest parsing and
 lon/lat → UTM 43N → pixel addressing; **the TIFF pixel decode is still wrong**
@@ -169,7 +280,7 @@ Full derivation, exact paths, traps and the confidence contract:
 chunks are a **Derivative Database**. The obligation is real:
 
 - The **renderer and app code** is a Produced Work. Per the OSMF FAQ you may
-  apply whatever terms you like to it — the application is *not* copyleft.
+  apply whatever terms you like to it — the application is _not_ copyleft.
 - The **chunk data** must be offered under
   [ODbL 1.0](https://opendatacommons.org/licenses/odbl/1-0/).
 - Attribution belongs **in the data or metadata**, not only in the app UI.
@@ -193,9 +304,15 @@ advice. If this becomes commercial, get a lawyer to confirm.
 Runnable checks — no test framework, no fixtures:
 
 ```bash
+bun run check            # everything below, in order
 bun run check:stations   # station order, unique codes, increasing chainage, real Devanagari
 bun run check:fly        # the admin-power (creative) flight movement maths, headless
-node scripts/validate-geo.mjs   # the geographic gate (needs data/build/)
+bun run check:geo-transform  # footprints land on their real coordinates, all four quadrants
+bun run check:land        # the land mask decomposition the sea and the map share
+bun run check:map        # the map's land decomposition, projector and road skeleton
+bun run check:water      # the sea gate: 36 sites on land, harbours water, reservoirs water
+bun run check:geo        # the geographic gate: 36/36 sites (needs data/build/)
+bun run check:starter    # a fresh clone stands alone (dev server up; hides data/build/)
 ```
 
 Run `check:stations` after touching `src/mumbai/stations.ts` — every sign,
@@ -331,5 +448,7 @@ open-licence imagery fallback if real imagery is ever genuinely needed.
 
 - [`docs/NEXT-SESSION.md`](docs/NEXT-SESSION.md) — current state, the Open
   Buildings decode blocker, known bugs, what is still open.
+- [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) — what is being built
+  next and what has been deliberately deferred.
 - [`docs/height-sources.md`](docs/height-sources.md) — the height research.
 - [`AGENTS.md`](AGENTS.md) — workflow rules for agents working in this repo.

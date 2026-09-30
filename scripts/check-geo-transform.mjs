@@ -21,7 +21,10 @@ function buildingGeometry(ring, height) {
   const shape = new THREE.Shape();
   shape.moveTo(ring[0][0], ring[0][1]);
   for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], ring[i][1]);
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: height,
+    bevelEnabled: false,
+  });
   geo.rotateX(Math.PI / 2);
   geo.translate(0, height, 0);
   return geo;
@@ -31,17 +34,55 @@ let failures = 0;
 function check(label, actual, expected, tol = 0.51) {
   const ok = Math.abs(actual - expected) <= tol;
   if (!ok) failures++;
-  console.log(`${ok ? "ok  " : "FAIL"} ${label}: ${actual.toFixed(1)} (expect ${expected.toFixed(1)})`);
+  console.log(
+    `${ok ? "ok  " : "FAIL"} ${label}: ${actual.toFixed(1)} (expect ${expected.toFixed(1)})`,
+  );
 }
 
 // A real-ish footprint: negative X and negative northing, as in the Charni/Fort
 // tiles. Sign errors only show up when the coordinate is negative, so both
 // quadrants matter.
 const cases = [
-  { name: "SW quadrant (Fort/Charni)", ring: [[-4241, -5148], [-4221, -5148], [-4221, -5125], [-4241, -5125]], h: 20 },
-  { name: "NE quadrant (Thane)", ring: [[14000, 12000], [14020, 12000], [14020, 12010], [14000, 12010]], h: 35 },
-  { name: "NW quadrant (Andheri)", ring: [[-1500, 22000], [-1480, 22000], [-1480, 22030], [-1500, 22030]], h: 12 },
-  { name: "SE quadrant (Navi Mumbai)", ring: [[38000, -12000], [38030, -12000], [38030, -11980], [38000, -11980]], h: 45 },
+  {
+    name: "SW quadrant (Fort/Charni)",
+    ring: [
+      [-4241, -5148],
+      [-4221, -5148],
+      [-4221, -5125],
+      [-4241, -5125],
+    ],
+    h: 20,
+  },
+  {
+    name: "NE quadrant (Thane)",
+    ring: [
+      [14000, 12000],
+      [14020, 12000],
+      [14020, 12010],
+      [14000, 12010],
+    ],
+    h: 35,
+  },
+  {
+    name: "NW quadrant (Andheri)",
+    ring: [
+      [-1500, 22000],
+      [-1480, 22000],
+      [-1480, 22030],
+      [-1500, 22030],
+    ],
+    h: 12,
+  },
+  {
+    name: "SE quadrant (Navi Mumbai)",
+    ring: [
+      [38000, -12000],
+      [38030, -12000],
+      [38030, -11980],
+      [38000, -11980],
+    ],
+    h: 45,
+  },
 ];
 
 for (const c of cases) {
@@ -59,7 +100,11 @@ for (const c of cases) {
 }
 
 if (failures) {
-  console.error(`\ngeo transform check FAILED (${failures} assertions) — buildings will not land where the data says.`);
+  console.error(
+    `\ngeo transform check FAILED (${failures} assertions) — buildings will not land where the data says.`,
+  );
   process.exit(1);
 }
-console.log(`\nok  geo transform verified: footprints land on their real coordinates, in all four quadrants.`);
+console.log(
+  `\nok  geo transform verified: footprints land on their real coordinates, in all four quadrants.`,
+);

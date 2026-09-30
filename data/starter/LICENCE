@@ -1,0 +1,24 @@
+© OpenStreetMap contributors
+
+The files in this directory are a Derivative Database of data from
+OpenStreetMap, made by scripts/make-starter.mjs out of scripts/ingest-mumbai.mjs.
+
+    This data is (c) OpenStreetMap contributors, available under the
+    Open Database License (ODbL) v1.0: https://opendatacommons.org/licenses/odbl/1-0/
+
+Where the chunk geometry came from, and how it was transformed:
+
+  Source      Mumbai_WFL1 (Buildings / Streets FeatureServer), an OSM-derived
+              dataset, plus natural=coastline and natural=water from the
+              OpenStreetMap editing API.
+  Transformed Tiles de-duplicated by centroid ownership, heights estimated by
+              a documented per-class rule (NOT measured — height_source is
+              "estimated" with confidence capped at 0.45), WGS84 rings
+              projected to a local metric frame and quantised to centimetres.
+
+The renderer and application code in src/ is NOT covered by the ODbL. It is a
+Produced Work and is licensed separately; the share-alike attaches to this
+data, never to the app.
+
+Regenerate this directory with:  node scripts/make-starter.mjs --force
+Regenerate the data behind it with: bun run setup

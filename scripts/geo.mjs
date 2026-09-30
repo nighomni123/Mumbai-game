@@ -89,7 +89,12 @@ export function tileOf(x, y) {
 
 /** @param {TileId} t */
 export function tileBounds(t) {
-  return { x0: t.gx * TILE_M, x1: (t.gx + 1) * TILE_M, y0: t.gy * TILE_M, y1: (t.gy + 1) * TILE_M };
+  return {
+    x0: t.gx * TILE_M,
+    x1: (t.gx + 1) * TILE_M,
+    y0: t.gy * TILE_M,
+    y1: (t.gy + 1) * TILE_M,
+  };
 }
 
 /** @returns {TileId[]} all tiles covering the metro bounds */
@@ -99,7 +104,8 @@ export function allTiles() {
   const gx1 = Math.floor(METRO_BOUNDS.x1 / TILE_M);
   const gy0 = Math.floor(METRO_BOUNDS.y0 / TILE_M);
   const gy1 = Math.floor(METRO_BOUNDS.y1 / TILE_M);
-  for (let gy = gy0; gy <= gy1; gy++) for (let gx = gx0; gx <= gx1; gx++) out.push({ gx, gy });
+  for (let gy = gy0; gy <= gy1; gy++)
+    for (let gx = gx0; gx <= gx1; gx++) out.push({ gx, gy });
   return out;
 }
 
@@ -128,7 +134,9 @@ export function ringAreaM2(ring) {
  * @returns {LonLat}
  */
 export function centroid(ring) {
-  let cx = 0, cy = 0, a = 0;
+  let cx = 0,
+    cy = 0,
+    a = 0;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
     const [x0, y0] = ring[j];
     const [x1, y1] = ring[i];
@@ -138,10 +146,77 @@ export function centroid(ring) {
     cy += (y0 + y1) * f;
   }
   if (Math.abs(a) < 1e-12) {
-    let mx = 0, my = 0;
-    for (const p of ring) { mx += p[0]; my += p[1]; }
+    let mx = 0,
+      my = 0;
+    for (const p of ring) {
+      mx += p[0];
+      my += p[1];
+    }
     return { lon: mx / ring.length, lat: my / ring.length };
   }
   a *= 3;
   return { lon: cx / a, lat: cy / a };
+}
+
+/* ------------------------------------------------------------------ *
+ * Douglas-Peucker polyline simplification.
+ *
+ * Shared because it now has three callers (the water ingest, the city map
+ * build, and anything that wants map-scale geometry) and the cost of a
+ * subtly different copy is silent: a coastline that collapses, or a road
+ * skeleton so detailed the map file is 40 MB instead of 2.
+ *
+ * Iterative, because a Konkan coastline way runs to thousands of points
+ * and the recursive form blows the stack.
+ *
+ * A CLOSED ring has its duplicate last point lifted off first. Left alone,
+ * the outer a->b baseline is zero-length, every interior point reads as
+ * collinear, and the ring collapses to 2 points.
+ *
+ * @param {[number,number][]} pts
+ * @param {number} tol tolerance in the units of `pts`
+ * @returns {[number,number][]}
+ */
+export function simplify(pts, tol) {
+  const closed =
+    pts.length > 2 &&
+    Math.abs(pts[0][0] - pts[pts.length - 1][0]) < 1e-9 &&
+    Math.abs(pts[0][1] - pts[pts.length - 1][1]) < 1e-9;
+  const arc = closed ? pts.slice(0, -1) : pts;
+  if (arc.length < 3) return pts;
+
+  const keep = new Uint8Array(arc.length);
+  keep[0] = keep[arc.length - 1] = 1;
+  const stack = [[0, arc.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop();
+    if (b - a < 2) continue;
+    const [ax, ay] = arc[a];
+    const [bx, by] = arc[b];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1e-12;
+    let far = -1;
+    let fd = tol;
+    for (let i = a + 1; i < b; i++) {
+      const d = Math.abs(dy * (arc[i][0] - ax) - dx * (arc[i][1] - ay)) / len;
+      if (d > fd) {
+        fd = d;
+        far = i;
+      }
+    }
+    if (far < 0) continue;
+    keep[far] = 1;
+    stack.push([a, far], [far, b]);
+  }
+  const out = arc.filter((_, i) => keep[i]);
+  return closed ? [...out, out[0]] : out;
+}
+
+/** Segment length of a polyline. Cheap; the map builder sums these. */
+export function pathLength(pts) {
+  let n = 0;
+  for (let i = 0; i < pts.length - 1; i++)
+    n += Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+  return n;
 }
