@@ -239,10 +239,10 @@ export class GeoCity {
       geos.forEach((g) => g.dispose());
     }
 
-    const streets = buildStreetLines(job.data.s ?? []);
-    if (streets) {
-      st.group.add(streets);
-      meshes.push(streets);
+    const surfaces = buildSurfaces(job.key, job.data.s ?? []);
+    if (surfaces) {
+      st.group.add(surfaces);
+      surfaces.children.forEach((c) => meshes.push(c as THREE.Mesh));
     }
 
     this.group.add(st.group);
@@ -320,20 +320,149 @@ interface BuildJob {
 
 interface StreetFeature { id: string; p: [number, number][][]; n: string | null; c: number | null; w: number | null; }
 
-/** One LineSegments mesh for a chunk's street centrelines, or null if empty. */
-function buildStreetLines(streets: StreetFeature[]): THREE.LineSegments | null {
-  const pts: number[] = [];
+/**
+ * The surface layer: ground, road ribbons, kerbs, footpaths, markings.
+ *
+ * Until now streets were 1-pixel lines drawn on nothing. That reads fine from
+ * 220 m up and is unplayable from the ground, so this builds the real layering
+ * a walker stands on: road -> kerb -> footpath -> building.
+ *
+ * Widths are DERIVED from the street's `road_class`, not measured: the chunk
+ * format carries no true width field (`w` is a duplicate of `c`). Mumbai
+ * convention used here — local lanes ~7 m kerb-to-kerb, arterials ~14 m.
+ */
+const ROAD_HALF_WIDTH: Record<number, number> = { 1: 3.5, 3: 4.5, 5: 7, 6: 7 };
+const KERB_H = 0.15;
+const FOOTPATH_W = 1.8;
+
+/** Strip builder: accumulate quads as flat [x,y,z,...] arrays. */
+class Strip {
+  pos: number[] = [];
+  /** Push a horizontal quad from two edges. */
+  quad(a: [number, number], b: [number, number], c: [number, number], d: [number, number], y: number) {
+    const p = this.pos;
+    p.push(a[0], y, a[1], b[0], y, b[1], c[0], y, c[1]);
+    p.push(a[0], y, a[1], c[0], y, c[1], d[0], y, d[1]);
+  }
+  geometry(): THREE.BufferGeometry | null {
+    if (!this.pos.length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3));
+    return g;
+  }
+}
+
+/** Perpendicular offsets either side of a centreline, at the given half-width. */
+function ribbon(path: [number, number][], half: number): { l: [number, number][]; r: [number, number][] } | null {
+  if (path.length < 2) return null;
+  const l: [number, number][] = [];
+  const r: [number, number][] = [];
+  for (let i = 0; i < path.length; i++) {
+    const p = path[i];
+    const prev = path[i - 1] ?? path[i];
+    const next = path[i + 1] ?? path[i];
+    let dx = next[0] - prev[0];
+    let dy = next[1] - prev[1];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) {
+      // degenerate segment (a repeated vertex): reuse the previous normal
+      const back = ribbon([[prev[0], prev[1]], p], half);
+      return back;
+    }
+    dx /= len;
+    dy /= len;
+    l.push([p[0] - dy * half, p[1] + dx * half]);
+    r.push([p[0] + dy * half, p[1] - dx * half]);
+  }
+  return { l, r };
+}
+
+function buildSurfaces(key: string, streets: StreetFeature[]): THREE.Group | null {
+  const group = new THREE.Group();
+  group.name = `surface_${key}`;
+  const [gx, gy] = key.split(",").map(Number);
+
+  // --- ground: one quad covering the whole tile, so the city has a floor ---
+  const half = TILE_M / 2;
+  const ground = new Strip();
+  ground.quad(
+    [gx * TILE_M - half, gy * TILE_M - half],
+    [gx * TILE_M - half, gy * TILE_M + half],
+    [gx * TILE_M + half, gy * TILE_M + half],
+    [gx * TILE_M + half, gy * TILE_M - half],
+    0,
+  );
+  const gg = ground.geometry();
+  if (gg) {
+    // A horizontal quad under a low sun lands in the toon ramp's DARKEST band
+    // and renders the whole floor near-black. Lighter the base colour well past
+    // the surface tone so even the shadow band stays a visible floor, and keep
+    // it lit so buildings still cast onto it — an unlit floor reads as a void.
+    const gm = new THREE.Mesh(gg, cel({ color: 0xd8d2c2, bands: 2 }));
+    gm.receiveShadow = true;
+    gm.renderOrder = -2;
+    group.add(gm);
+  }
+
+  const road = new Strip();
+  const kerb = new Strip();
+  const foot = new Strip();
+  const marks = new Strip();
+
   for (const st of streets) {
+    // `c` is road_class and may be null on some features; default to local.
+    const cls = (st.c ?? 1) as number;
+    const hw = ROAD_HALF_WIDTH[cls] ?? ROAD_HALF_WIDTH[1];
+    const isArterial = cls >= 5;
     for (const path of st.p) {
-      for (let i = 0; i < path.length - 1; i++) {
-        pts.push(path[i][0], 0.06, path[i][1], path[i + 1][0], 0.06, path[i + 1][1]);
+      const w = ribbon(path, hw);
+      if (!w) continue;
+      for (let i = 0; i < w.l.length - 1; i++) {
+        // carriageway
+        road.quad(w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.01);
+        // kerb faces, raised, either side
+        const o = (v: [number, number], out: number): [number, number] => {
+          const dx = v[0] - path[i][0];
+          const dy = v[1] - path[i][1];
+          const d = Math.hypot(dx, dy) || 1;
+          return [v[0] + (dx / d) * out, v[1] + (dy / d) * out];
+        };
+        const l0 = o(w.l[i], 0.001);
+        const l1 = o(w.l[i + 1], 0.001);
+        const r0 = o(w.r[i], 0.001);
+        const r1 = o(w.r[i + 1], 0.001);
+        kerb.quad(w.l[i], l0, l1, w.l[i + 1], KERB_H);
+        kerb.quad(r1, r0, w.r[i], w.r[i + 1], KERB_H);
+        // footpath bands outside the kerb
+        const fo = FOOTPATH_W;
+        const L0 = o(w.l[i], fo);
+        const L1 = o(w.l[i + 1], fo);
+        const R0 = o(w.r[i], fo);
+        const R1 = o(w.r[i + 1], fo);
+        foot.quad(l0, L0, L1, l1, KERB_H);
+        foot.quad(R1, R0, r0, r1, KERB_H);
+        // centre line on arterials only
+        if (isArterial) {
+          marks.quad(path[i], path[i + 1], path[i + 1], path[i], 0.02);
+        }
       }
     }
   }
-  if (!pts.length) return null;
-  const g = new THREE.BufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(pts, 3));
-  return new THREE.LineSegments(g, flat({ color: 0x5b5548, toneMapped: false }));
+
+  const add = (s: Strip, color: number, order: number) => {
+    const g = s.geometry();
+    if (!g) return;
+    const m = new THREE.Mesh(g, flat({ color, toneMapped: false }));
+    m.receiveShadow = true;
+    m.renderOrder = order;
+    group.add(m);
+  };
+  add(road, 0x54535a, -1);
+  add(kerb, 0xcfcabb, 0);
+  add(foot, 0xb9b3a4, 0);
+  add(marks, 0xe8dfc0, 0);
+
+  return group.children.length ? group : null;
 }
 
 /**
