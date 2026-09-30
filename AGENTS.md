@@ -168,6 +168,53 @@ What follows is only what the README does not tell you.
   touching `stations.ts`. It parses the TS by regex — no TS runtime, no deps.
 - Only dependency left for 3D is `three` itself.
 
+### Live testing harness — `scripts/live.mjs`
+For watching the game run and reporting back while you play it. Headed
+Playwright, **no new dependency** — the global install, same import path
+`shot-fly.mjs` already uses. Start the dev server first (`bun run dev`); the
+script says so plainly if it cannot reach the page.
+
+- **`bun scripts/live.mjs`** — the harness drives a scripted play-through
+  (start → walk → look → run → admin power → climb → power off), screenshotting
+  and measuring each beat. Writes `shots/live/trace.zip`; scrub the whole run
+  with `npx playwright show-trace shots/live/trace.zip` — every action it took,
+  with a screenshot before and after, plus network and console. This is the way
+  to see *what the harness did*. One beat produced a valid 19 MB trace
+  (verified 2026-09-30).
+- **`bun scripts/live.mjs --watch 3`** — hands-off. You play in the window, it
+  samples every ~3s: `shots/live/latest.png` plus one JSON line per sample
+  appended to `shots/live/telemetry.jsonl` (fps, position, speed, platform/road,
+  nearest station, fly, canvas size). **No trace in this mode, deliberately** —
+  Playwright only records actions *it* issues, so a session you drive yourself
+  yields a near-empty trace while still staging ~17 MB of staged screenshots
+  that fail to assemble on a long run. Screenshots and telemetry are the honest
+  artefact for a session you are playing.
+- Telemetry reads `window.__game` — the same bridge `Hud.tsx` polls — so the
+  numbers are the numbers on screen, not a guess; `fps` and the HUD's own
+  readout agree. `MumbaiWorld.tsx` exposes it under `import.meta.env.DEV`, the
+  same hook `preview.ts` has always had. It is stripped from the build, so this
+  only works against `bun run dev`, never a production bundle.
+- **Known finding, NOT yet fixed (confirmed 2026-09-30):** every run logs
+  `GL_INVALID_OPERATION: Vertex buffer is not big enough for the draw call`,
+  repeatedly, on `/dashboard` — something in the scene is drawn with a buffer
+  too small for its draw call. It does not visibly break the frame, but it is
+  a real error and is in every "problems" list the harness prints.
+- The harness's own capture taxes the game: it reported **~9 fps** average, but
+  that is a headed-Chromium-under-automation number, not a verdict on the
+  engine. Measure real performance in your own browser before optimising
+  against it. Screenshots also cost ~2s each here, so `--watch 3` really lands
+  at roughly a 5s cadence.
+
+**Two machine gotchas, both already worked around inside the script:**
+- `PLAYWRIGHT_BROWSERS_PATH` is exported pointing at a folder that does not
+  exist (`.../Projects/Do not delete folder/.pw-browsers`). Chromium is really
+  in `~/Library/Caches/ms-playwright`. The script repairs it in-process, but
+  **only when the configured path is unusable**, so a working environment is
+  left alone. Worth fixing the shell export.
+- Playwright's **ffmpeg is not installed** and `playwright install ffmpeg`
+  times out on this network, so there is **no video recording**. The trace does
+  not need ffmpeg and is unaffected. Re-try the install if video is ever wanted.
+
 ### No backend — the world is the whole product
 - **The Convex backend and the whole auth flow were removed on 2026-09-29**
   (`a72552c`). `/dashboard` is public. There is no `ConvexAuthProvider`, no
