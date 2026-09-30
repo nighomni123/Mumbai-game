@@ -24,3 +24,6 @@ npm-debug.log*
 
 # Generated geospatial tiles/chunks (rebuild with scripts/ingest-mumbai.mjs + enrich-chunks.mjs)
 data/build/
+
+# Disposable raster decode cache (ob_height) - regenerate, never commit
+data/ob-cache/
