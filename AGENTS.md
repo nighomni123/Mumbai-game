@@ -418,6 +418,56 @@ means the street-level layers are on the critical path, not optional:
 road surfaces, kerbs, crossings, footpaths, terrain and water all have to exist
 before a walker has something to stand on.
 
+### Performance budget — smooth by default, LOD and distance invisibly
+The city is 260k buildings; the user must never feel a technique or wait on a
+setting. Everything below is automatic and invisible. Measured cost drivers
+(2026-09-30): loadRadius 3 = 49 chunks resident, ~13k buildings, ~245 merged
+meshes; observed Fort at radius 2 = 1,005 draw calls and ~4M triangles/frame.
+
+**The cost is split, and the two halves need different fixes:**
+- **GPU/frame:** triangles, draw calls, and the shadow pass re-rendering every
+  mesh into one 2048 map. This is what the user would feel as frame drops.
+- **CPU/load:** `ExtrudeGeometry` runs once per building per chunk load (~265
+  per chunk). This is what the user would feel as a stutter when flying fast —
+  the main build is done incrementally across frames so it never blocks.
+
+**Distance / LOD (invisible):**
+- Chunk residency is an LRU ring around the camera, not a hard radius —
+  raised ahead of the direction of travel, lowered behind. Flying forward never
+  waits on a load.
+- Beyond the near ring, chunks render as a cheap **impostor**: the merged
+  silhouette at reduced detail, or skipped entirely past a far cutoff. Footprint
+  geometry is invisible at range; nobody has ever noticed a missing cornice from
+  400 m up.
+- `frustumCulled` stays on and bounding spheres stay correct (see
+  `check-geo-transform.mjs`); per-chunk culling is the cheap win that keeps
+  off-screen chunks out of the draw entirely.
+
+**CPU-first rendering, so the frame is built once and cheaply:**
+- **Bake footprints to flat 2-D geometry on a worker** (or in idle slices), and
+  extrude lazily/cheaply. Move triangle tessellation and normal computation off
+  the main thread; the main thread should only be uploading buffers.
+- **Merge per class per chunk (already done)**, and additionally merge
+  *across* a whole LOD ring so distant chunks collapse into a handful of draws.
+- **Frustum-cull chunks, not just meshes** — skip the whole chunk when none of
+  its buildings are visible. A quarter of the grid is behind you at any time.
+- Reuse typed arrays and pre-size buffers; never reallocate a big Float32Array
+  per chunk (the current merge does — fix with a pooled builder).
+
+**GPU-first, felt as nothing:**
+- **A single cascade-less shadow strategy that follows the player** (already the
+  plan): one tight 2048 map around the camera beats four large cascades on
+  integrated GPUs.
+- **Distance culling of shadows:** only near-ring chunks cast. Distant shadows
+  are invisible at range and cost a full extra pass.
+- Cap pixel ratio, and drop `dpr` adaptively if frame time rises — invisible
+  until it saves you.
+
+**Safety net:** an adaptive guard reads frame time and, before the user could
+notice, (a) sheds far-chunk detail, (b) disables distant shadow casting, then
+(c) reduces resolution. It never changes what the user is doing or shows a
+setting unless they ask. All of it is measured, not guessed.
+
 ### The hand-drawn theme already exists
 - Custom utility classes are defined in `src/index.css` and are the intended
   vocabulary for this app's look: `display`, `hand`, `note`, `ruled`, `sketch`,
