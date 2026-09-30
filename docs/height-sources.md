@@ -785,3 +785,30 @@ python3 -m venv /tmp/dv && /tmp/dv/bin/pip install duckdb==1.5.6 s2sphere==0.2.5
 * East-Asia / Europe are outside this dataset's scope (Africa, South Asia,
   South-East Asia, Latin America, Caribbean) — irrelevant for Mumbai but relevant if
   you ever extend the world.
+
+
+---
+
+## Appendix: what our own implementation measured (2026-09-29)
+
+We built a partial byte-range TIFF reader (`scripts/ob_height.py`) and verified
+every step EXCEPT the final pixel decode:
+
+- anonymous GCS read of the manifest and Mumbai tiles: **works** (206)
+- manifest parse, cell `3b`, band->plane map (height=1, presence=2): **correct**
+- lon/lat -> UTM 43N -> pixel via `affineTransform`: **correct**
+- tile URL join (`3b` + `e7c_...`, no separator): **correct**
+- TIFF is tiled 512, deflate, 3 planes, 7203 offsets, 2401/plane: **correct**
+- reading a band tile's bytes by range and inflating them: length correct
+  (exactly 512*512*4 = 1,048,576 bytes)
+
+**The pixel decode is WRONG.** Interpreting the inflated bytes as little-endian
+float32 yields values with magnitude ~1e37 and ~99% whole numbers — a misaligned
+float read, not metre values. A dense Andheri tile returned a "height" max of
+8.0 m, which is obviously wrong (real Andheri has 20-70 m towers).
+
+Conclusion: the hand-rolled reader must be cross-checked against a real decoder
+(rasterio/GDAL) before any sampled height is trusted. The sampler currently
+RAISES rather than emit a fabricated height. This does NOT change any
+conclusion in this document about which source to use or how to sample it — only
+how the bytes get turned into floats.

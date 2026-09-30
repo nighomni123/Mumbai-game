@@ -19,31 +19,44 @@ State as of the end of 2026-09-29. Read this first, then `AGENTS.md`.
 as a tiled three.js city. `node scripts/validate-geo.mjs` passes **36/36** sites
 across all 24 required areas.
 
-## Start here: wire in measured heights
+## START HERE: finish the Open Buildings 2.5D height decode
 
-Heights are currently **estimated**, not measured. That is the single biggest
-remaining quality gap and the reason the skyline is conservative.
+Heights are currently **estimated** (documented non-monotonic rule), not
+measured. That is the biggest remaining quality gap.
 
-The measured source is **Google Open Buildings 2.5D Temporal**, and the key
-finding is that it is **not** Earth-Engine-gated — the GCS bucket
-`open-buildings-temporal-data` is public-read. Verified this session with
-anonymous curl:
+**Everything around the decode is done and verified** — do not redo it. What is
+built in `scripts/ob_height.py`:
+- anonymous GCS reads (bucket is public; no Earth Engine, no account)
+- the 3.5 MB manifest for cell `3b` (UTM 43N) is parsed
+- lon/lat -> UTM 43N -> pixel via the tile `affineTransform` is exact
+- tile URL join is the trap: `uriPrefix` `.../geotiffs/3b` + `e7c_2023_06_30/...`
+  concatenates with NO separator
+- the TIFF is tiled 512x512, deflate (compression 8), 3 planar bands
+  (fractional_count / **height** / **presence**), 7203 tile offsets, 2401/plane
+- band-tile bytes are read by byte-range and decompressed; tiles are disk-cached
 
-- manifest: `https://storage.googleapis.com/open-buildings-temporal-data/v1/manifests/3b_EPSG_32643_2023_06_30.json` (200, 3.5 MB; cell `3b`, UTM 43N)
-- Fort/Bandra tile: `.../v1/geotiffs/3be7c_2023_06_30/tile_OScHfh-5ubs.tif` (HTTP 206)
+**THE BLOCKER:** the partial TIFF **pixel decode is wrong.** Reading a band tile
+and interpreting the decompressed bytes as little-endian float32 gives values in
+the **1e37 range, 99% whole numbers** (measured). A misaligned float read. The
+`sample_footprint_height` function therefore RAISES by default
+(`_DECODE_VALIDATED = False`) rather than emit a fake height — do not "fix" this
+by loosening that gate.
 
-It is a **raster**, 4 m effective, band `building_height` (metres, 100 m cap,
-nodata `-99.0`), with **no join key** to footprints — you sample it per
-footprint. Sample the **75th percentile over high-`building_presence` pixels**,
-not the mean (4 m pixels straddle roof edges and average against zeros).
+**To finish it** (pick one):
+1. Install a real reader — `pip install rasterio` (or GDAL bindings) and read
+   the byte-range window properly. Fastest, most reliable. This is the
+   recommended route; it also removes the need to hand-roll the TIFF.
+2. If staying dependency-free, cross-check the hand-rolled decode against a
+   reference decoder on ONE tile (verify value range is 0..100 m, nodata -99)
+   before flipping `_DECODE_VALIDATED`.
 
-Full derivation, exact paths, the three sampling traps, the sanity gate, and
-the confidence contract are in **`docs/height-sources.md`**. Read that before
-writing the sampler.
+Once decoded, the sampling rule is already in place and correct: take the **75th
+percentile of `building_height` over pixels where `building_presence >= 0.5`**
+(not the mean — 4 m pixels straddle roof edges and average against zeros). Set
+`height_source: "raster"`, `hc: 0.55`, and run `sane_height()` on every value.
 
-When it lands, set `height_source: "raster"` and `hc: 0.55` (vs the current
-`"estimated"` / ≤0.45) and run `saneHeight()` on every sampled value — it
-exists to reject outliers and it must apply to raster output too.
+Full derivation, exact paths, traps and the confidence contract:
+**`docs/height-sources.md`**. Read it before touching the sampler.
 
 ## Known-good debugging workflow
 
