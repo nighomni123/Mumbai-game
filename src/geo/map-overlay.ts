@@ -35,6 +35,13 @@ export class MapOverlay {
   private g: CanvasRenderingContext2D | null;
   private map: CityMap | null = null;
   private onPick: (name: string) => void;
+  /**
+   * Where the player is right now. Read at draw time rather than held, because
+   * the world behind is frozen but the player is not — this is what puts a
+   * "you are here" marker on the map instead of a map you cannot locate
+   * yourself on.
+   */
+  private player: () => { x: number; z: number; heading: number };
 
   /** Centre of the view, in local metres. */
   private cx: number;
@@ -43,8 +50,13 @@ export class MapOverlay {
 
   private disposers: (() => void)[] = [];
 
-  constructor(host: HTMLElement, onPick: (name: string) => void) {
+  constructor(
+    host: HTMLElement,
+    onPick: (name: string) => void,
+    player: () => { x: number; z: number; heading: number },
+  ) {
     this.onPick = onPick;
+    this.player = player;
     this.cx = (METRO_BOUNDS.x0 + METRO_BOUNDS.x1) / 2;
     this.cz = (METRO_BOUNDS.y0 + METRO_BOUNDS.y1) / 2;
 
@@ -206,12 +218,63 @@ export class MapOverlay {
       }
       if (this.map.data) this.drawRoads(g, v, W, H);
       placeDots(g, v, W, H, true);
+      this.drawPlayer(g, v, W, H);
     } else {
       g.fillStyle = "#efe6c4";
       g.font = "14px ui-sans-serif, system-ui, sans-serif";
       g.textAlign = "center";
       g.fillText("the land mask has not loaded", W / 2, H / 2);
     }
+  }
+
+  /**
+   * Where you are, and which way you are facing.
+   *
+   * Drawn last so it sits over the roads and the place dots. The cone matters
+   * more than the dot: on a flat map of 67 x 82 km a 4 px dot is one of several
+   * hundred marks, and the cone is the only part that tells you which way the
+   * next street you walk into goes.
+   */
+  private drawPlayer(
+    g: CanvasRenderingContext2D,
+    v: ReturnType<MapOverlay["view"]>,
+    W: number,
+    H: number,
+  ): void {
+    const p = this.player();
+    const px = v.x(p.x);
+    const py = v.y(p.z);
+    if (px < -60 || px > W + 60 || py < -60 || py > H + 60) return;
+
+    g.save();
+    g.translate(px, py);
+    g.rotate(p.heading);
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.arc(0, 0, 46, -Math.PI / 2 - 0.4, -Math.PI / 2 + 0.4);
+    g.closePath();
+    g.fillStyle = "rgba(255,196,60,0.34)";
+    g.fill();
+    g.restore();
+
+    // a white halo under the dot so it survives on cream land and blue sea alike
+    g.beginPath();
+    g.arc(px, py, 10, 0, Math.PI * 2);
+    g.strokeStyle = "#ffffff";
+    g.lineWidth = 4;
+    g.stroke();
+    g.beginPath();
+    g.arc(px, py, 7, 0, Math.PI * 2);
+    g.fillStyle = "#c23a2c";
+    g.fill();
+
+    g.font = "600 13px ui-sans-serif, system-ui, sans-serif";
+    g.textAlign = "center";
+    g.lineWidth = 3;
+    g.strokeStyle = "rgba(20,18,24,0.85)";
+    g.strokeText("you are here", px, py - 16);
+    g.fillStyle = "#efe6c4";
+    g.fillText("you are here", px, py - 16);
   }
 
   /** Roads, only where they would actually be visible as more than a smear. */
@@ -280,7 +343,11 @@ export class MapOverlay {
    */
   private lastKey = "";
   tick(): void {
-    const key = `${this.cx.toFixed(1)}|${this.cz.toFixed(1)}|${this.zoom.toFixed(3)}|${this.canvas.width}`;
+    // The player is in the key, so walking with the map open actually moves the
+    // marker. It was frozen with the world behind it, which made the map a
+    // picture of the city rather than a map you are standing in.
+    const p = this.player();
+    const key = `${this.cx.toFixed(1)}|${this.cz.toFixed(1)}|${this.zoom.toFixed(3)}|${this.canvas.width}|${p.x.toFixed(0)},${p.z.toFixed(0)},${p.heading.toFixed(2)}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.draw();

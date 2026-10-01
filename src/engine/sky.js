@@ -25,7 +25,14 @@ export function buildSky(scene, radius = 500) {
       varying vec3 vWorld;
       void main() {
         vec4 wp = modelMatrix * vec4( position, 1.0 );
-        vWorld = wp.xyz;
+        // Elevation is read from OBJECT space, not world space. src/geo/world.ts
+        // translates the dome to follow the camera, so a world-position gradient
+        // is skewed by the camera's distance from the origin and collapses: the
+        // horizon-to-zenith ramp measures 0.99 at the origin but 0.08 at 48 km,
+        // i.e. a flat sky over most of the city. The dome is only ever
+        // translated, never rotated or scaled, so object space IS the direction
+        // from its centre, and is exact at any distance.
+        vWorld = position;
         gl_Position = projectionMatrix * viewMatrix * wp;
       }
     `,

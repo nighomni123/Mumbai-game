@@ -58,6 +58,20 @@ export interface CityHandle {
     claimed: number[];
     colour: number[];
   };
+  /**
+   * Dev-only. The live scene graph, so a screenshot artefact can be traced back
+   * to the mesh that drew it. `renderer.info` alone cannot: it reports 56 draws,
+   * not which 56, and a handful of stray vertices inside a merged per-chunk
+   * buffer are invisible in a count but obvious on screen.
+   */
+  scene?: THREE.Scene;
+  /**
+   * Dev-only. Raycast a CSS pixel and report which mesh and which triangle drew
+   * it, with the vertex colours. Screenshots say a shape is there; only this
+   * says which six numbers put it there, which is what stops a visual bug being
+   * chased by disabling plausible-looking code until something else changes.
+   */
+  pick?: (px: number, py: number) => unknown;
 }
 
 export function mountCity(container: HTMLElement): CityHandle {
@@ -96,7 +110,15 @@ export function mountCity(container: HTMLElement): CityHandle {
   // misread as "the palette was fine". Struck out of the build by `import.meta.env.DEV`.
   const NOGRADE = import.meta.env.DEV && new URLSearchParams(location.search).has("nograde");
   scene.fog = NOGRADE ? new THREE.Fog(PAL.fog, 1e7, 2e7) : new THREE.Fog(PAL.fog, 600, 3600);
-  buildSky(scene, 3200);
+  // The sky dome must FOLLOW THE CAMERA.
+  //
+  // It was parented to the origin with a fixed 3,200 m radius, while the world
+  // spans about 28 x 48 km. Fly more than 3,200 m from the origin — which is
+  // anywhere in the eastern suburbs or Andheri — and the camera ends up
+  // OUTSIDE the dome, so its far side renders as a huge shaded sphere sitting
+  // in the world. Reported 2026-10-01 as "a dome shaped thing"; it is the sky,
+  // seen from the wrong side. Pinned to the camera each frame instead.
+  const sky = buildSky(scene, 3200);
   buildDistantHills(scene);
 
   // One shadow map that follows the camera. Not four cascades: this is a
@@ -242,6 +264,11 @@ export function mountCity(container: HTMLElement): CityHandle {
     game.goTo?.(name);
   }
 
+  /** The map overlay's "you are here" — read live, never cached. */
+  function playerState(): { x: number; z: number; heading: number } {
+    return { x: game.x, z: game.z, heading: game.heading };
+  }
+
   /** Face the nearest OTHER place, so arriving never means nose-first into a wall. */
   function faceNearestOther(self: string, x: number, z: number): number {
     let best = PLACES[0];
@@ -269,7 +296,7 @@ export function mountCity(container: HTMLElement): CityHandle {
       setMapOverlay(null);
       return;
     }
-    const overlay = new MapOverlay(container, onPickPlace);
+    const overlay = new MapOverlay(container, onPickPlace, playerState);
     overlay.setMap(game.map);
     setMapOverlay(overlay);
   };
@@ -358,6 +385,11 @@ export function mountCity(container: HTMLElement): CityHandle {
       sun.position.set(cx - 500, 620, cz + 360);
       sun.target.position.set(cx, 0, cz);
       sun.target.updateMatrixWorld();
+      // Keep the sky centred on the player. A dome fixed at the origin is
+      // something you fly out of, and then it is a giant object in the world
+      // rather than the sky.
+      sky.dome.position.set(camera.position.x, 0, camera.position.z);
+      sky.clouds.position.set(camera.position.x, 0, camera.position.z);
       // Only the near ring casts. A shadow map that re-renders every resident
       // chunk every frame is a second full geometry pass for shadows nobody at
       // this distance can resolve.
@@ -527,11 +559,65 @@ export function mountCity(container: HTMLElement): CityHandle {
       city.ensureAround(x, z);
     },
     openMap: () => {
-      const overlay = new MapOverlay(container, onPickPlace);
+      const overlay = new MapOverlay(container, onPickPlace, playerState);
       overlay.setMap(game.map);
       setMapOverlay(overlay);
     },
     attributeSurface,
+    scene,
+    pick(px: number, py: number) {
+      const w = container.clientWidth || window.innerWidth;
+      const h = container.clientHeight || window.innerHeight;
+      const rc = new THREE.Raycaster();
+      rc.setFromCamera(
+        new THREE.Vector2((px / w) * 2 - 1, -(py / h) * 2 + 1),
+        camera,
+      );
+      return rc.intersectObjects(scene.children, true).slice(0, 4).map((hit) => {
+        const g = (hit.object as THREE.Mesh).geometry;
+        const pos = g.attributes.position.array as ArrayLike<number>;
+        const colAttr = g.attributes.color;
+        const col = colAttr?.array as ArrayLike<number> | undefined;
+        // respect the attribute's own stride — these buffers are RGBA in some
+        // paths and RGB in others, and reading colour[i*3] blindly returns a
+        // hex assembled from three unrelated floats.
+        const cs = colAttr?.itemSize ?? 3;
+        const f = hit.face;
+        const verts = f
+          ? [f.a, f.b, f.c].map((i) => ({
+              p: [pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2]].map((v) => +v.toFixed(1)),
+              c: col
+                ? (
+                    "#" +
+                    [0, 1, 2]
+                      .map((k) =>
+                        Math.round(col[i * cs + k] * 255)
+                          .toString(16)
+                          .padStart(2, "0"),
+                      )
+                      .join("")
+                  )
+                : "?",
+            }))
+          : [];
+        const d = (a: { p: number[] }, b: { p: number[] }) =>
+          +Math.hypot(
+            a.p[0] - b.p[0],
+            a.p[1] - b.p[1],
+            a.p[2] - b.p[2],
+          ).toFixed(2);
+        return {
+          mesh: hit.object.name || hit.object.type,
+          dist: +hit.distance.toFixed(1),
+          edges: verts.length === 3
+            ? [d(verts[0], verts[1]), d(verts[1], verts[2]), d(verts[2], verts[0])].sort(
+                (a, b) => a - b,
+              )
+            : [],
+          verts,
+        };
+      });
+    },
     inspect() {
       const mesh = (o: THREE.Object3D) => {
         const m = o as THREE.Mesh;

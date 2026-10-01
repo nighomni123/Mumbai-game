@@ -2,6 +2,7 @@
 .monid/
 .monid-xdg/
 .monid-config/
+.freebuff/
 .dsh-dump-config.txt
 
 # Dependencies / build output

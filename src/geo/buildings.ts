@@ -184,6 +184,24 @@ export class Facet {
     y0: number, y1: number,
     hex: number, k = 1, flip = false,
   ) {
+    // A hairline band running unbroken for tens of metres is a BEAM, not a
+    // course. This was reported as "a rendering error that shows on specific
+    // angles", and measured rather than guessed at: the culprit is one quad,
+    // 0.14 m tall and 50.9 m long, on the building 3.8 m from the player
+    // (b_158253041, a 51 m art-deco frontage). Seen from 7.5 m its near end is
+    // ~11 px thick and it recedes to the vanishing point, sweeping across the
+    // sky in front of every other building.
+    //
+    // Splitting it per bay instead was tried first and was worse: 16x the
+    // triangles and a new set of dark artifacts. So it is dropped instead. The
+    // horizontal line is not lost — the 0.26 m MASSING ring band still runs the
+    // full frontage and survives this test, and it is thick enough to read as
+    // masonry at the same distance.
+    //
+    // ponytail: a distance fade would be better still, but chunks are static
+    // and camera-independent, so there is no distance to fade against. Upgrade
+    // path if this ever bites: draw thin bands only for edges under ~20 m.
+    if (Math.abs(y1 - y0) < 0.25 && Math.hypot(bx - ax, bz - az) > 20) return;
     if (flip) {
       this.tri(ax, y0, az, bx, y0, bz, bx, y1, bz, hex, k);
       this.tri(ax, y0, az, bx, y1, bz, ax, y1, az, hex, k);
@@ -389,10 +407,10 @@ export function buildBuilding(
       const y = plinthH + f * ftf;
       if (y > H - 1.4) break;
       const d = 0.28;
-      ring(b.r, y, y + 0.26, d, tone.trim, 1.12, out);
+      ring(b.r, y, y + 0.26, d, tone.trim, 1.0, out);
     }
     // a parapet that stands proud of the wall
-    ring(b.r, H - 0.05, H + 0.55, 0.2, tone.trim, 1.16, out);
+    ring(b.r, H - 0.05, H + 0.55, 0.2, tone.trim, 1.0, out);
     // a setback upper mass, so the silhouette is not a single prism
     if (floors >= 5) {
       const inset = ringInset(b.r, 1.1);
@@ -421,7 +439,7 @@ export function buildBuilding(
         out.quadY(
           ax + nx * 0.18, az + nz * 0.18,
           bx + nx * 0.18, bz + nz * 0.18,
-          y - 0.18, y - 0.04, tone.trim, 1.18,
+          y - 0.18, y - 0.04, tone.trim, 1.0,
         );
       }
     }
@@ -442,13 +460,12 @@ export function mass(
   // Walls as quads, one per edge. Flat-shaded per edge normal direction, which
   // is enough for cel shading and costs no extra vertices per face normal.
   const n = r.length;
+  const sign = windingSign(r);
   for (let i = 0; i < n; i++) {
     const a = r[i], b = r[(i + 1) % n];
-    const dx = b[0] - a[0], dz = b[1] - a[1];
-    const len = Math.hypot(dx, dz);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
     if (len < 0.3) continue;
-    // outward normal for a ring that is clockwise in XZ
-    const nx = dz / len, nz = -dx / len;
+    const [nx, nz] = outwardNormal(r, i, sign);
     const dot = nx * 0.55 + nz * 0.83; // fixed sun azimuth
     const k = 0.72 + 0.38 * Math.max(0, dot) - 0.06;
     // side quads
@@ -580,7 +597,7 @@ function semanticAccents(
       out.quadY(
         ax + nx * 0.14, az + nz * 0.14,
         bx + nx * 0.14, bz + nz * 0.14,
-        y, y + 0.42, A, 1.18,
+        y, y + 0.42, A, 1.0,
       );
     }
   }
@@ -627,6 +644,46 @@ function semanticAccents(
   void bb; void floors;
 }
 
+/**
+ * The OUTWARD normal of ring edge `i`.
+ *
+ * Measured 2026-10-01: `mass()` computed `(dz, -dx)` and its comment assumed a
+ * ring wound the other way, so the normal pointed INWARD on every edge in the
+ * data — 28934 of 28934 testable edges, not the 1312-edge sample first quoted.
+ * With `cel()` being `FrontSide` that back-face culled every wall, and you
+ * could see straight through every building to the road behind it.
+ *
+ * Direction is decided by the ring's own signed area, NOT by testing the
+ * normal against the centroid. Every ring here is clockwise (shoelace < 0), so
+ * the winding is uniform and already correct on the ~18% of edges that are
+ * reflex — and reflex is exactly where "does this point away from the
+ * centroid" is ambiguous. That test flipped 2992 correct normals the wrong
+ * way. Re-injecting it fails 10.34% of edges; the signed area fails none.
+ */
+function outwardNormal(
+  r: [number, number][],
+  i: number,
+  sign: number,
+): [number, number] {
+  const n = r.length;
+  const a = r[i], b = r[(i + 1) % n];
+  const dx = b[0] - a[0], dz = b[1] - a[1];
+  const len = Math.hypot(dx, dz);
+  if (len < 1e-6) return [0, 0];
+  // clockwise ring (sign +1) -> outward is (-dz, dx)
+  return [(-dz / len) * sign, (dx / len) * sign];
+}
+
+/** +1 for a clockwise ring, -1 for counter-clockwise — the shoelace sign. */
+function windingSign(r: [number, number][]): number {
+  let s = 0;
+  for (let i = 0; i < r.length; i++) {
+    const a = r[i], b = r[(i + 1) % r.length];
+    s += a[0] * b[1] - b[0] * a[1];
+  }
+  return s < 0 ? 1 : -1;
+}
+
 /** Pull every ring vertex toward the centroid, so a roof clears its eaves. */
 function ringInset(r: [number, number][], by: number): [number, number][] {
   let cx = 0, cz = 0;
@@ -668,12 +725,13 @@ function ring(
   f: Facet,
 ) {
   const n = r.length;
+  const sign = windingSign(r);
   for (let i = 0; i < n; i++) {
     const a = r[i], b = r[(i + 1) % n];
-    const dx = b[0] - a[0], dz = b[1] - a[1];
-    const len = Math.hypot(dx, dz);
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
     if (len < 0.3) continue;
-    const nx = (dz / len) * out, nz = (-dx / len) * out;
+    const [un, uz] = outwardNormal(r, i, sign);
+    const nx = un * out, nz = uz * out;
     f.quadY(a[0] + nx, a[1] + nz, b[0] + nx, b[1] + nz, y0, y1, hex, k);
   }
 }
@@ -745,10 +803,21 @@ function openings(
       // the contrast between a light frame and a dark opening is what makes a
       // window read at distance, and trim is too close to the base to do it.
       out.quadY(cx0, cz0, cx1, cz1, base - 0.12, base + wH + 0.12, strong ? 0xe8dcc4 : tone.trim, strong ? 1.25 : 1.05);
-    }
-    // sill
-    if (f === 0 || rnd() > 0.6) {
-      out.quadY(ax, az, bx, bz, base - 0.16, base - 0.04, tone.trim, 1.02);
+      // The sill is PER BAY, not one run down the whole edge.
+      //
+      // A continuous one was the "beams on specific angles" artefact: an 0.12 m
+      // band drawn unbroken along a 51 m frontage is 11 px thick seven metres
+      // from the eye and sweeps from the top of the frame to the vanishing
+      // point, so it reads as a searchlight rather than as masonry. Broken per
+      // bay it is what it was meant to be — a sill under each window — and it
+      // costs the same triangles.
+      if (f === 0 || rnd() > 0.6) {
+        out.quadY(
+          cx0 - (dx / len) * wW * 0.18, cz0 - (dz / len) * wW * 0.18,
+          cx1 + (dx / len) * wW * 0.18, cz1 + (dz / len) * wW * 0.18,
+          base - 0.16, base - 0.04, tone.trim, 1.0,
+        );
+      }
     }
   }
 }

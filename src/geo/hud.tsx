@@ -3,9 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { game, SPEED_MIN, SPEED_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
-  renderCityMap,
-  drawMinimapCentered,
-  minimapScreenToWorld,
+  renderPlayableMap,
+  drawMinimapPlayable,
+  playableScreenToWorld,
   type CityMap,
 } from "./citymap.js";
 import { toLocal } from "./geo-constants.js";
@@ -174,9 +174,16 @@ function SearchBar() {
   );
 }
 
-/** The minimap is portrait: the metro is 67 km wide and 82 km tall. */
-const MM_W = 188;
-const MM_H = 230;
+/**
+ * The minimap is portrait because the playable area is: DEV_BOUNDS is
+ * 17.9 km wide by 26.1 km tall, which is what the whole walkable box is fitted
+ * to. Bigger than before, because it is now the readable resolution rather than
+ * a few magnified pixels of a metro-wide bitmap.
+ */
+const MM_W = 224;
+const MM_H = 326;
+/** Base is drawn at 4x and downsampled, so nothing on screen is ever upscaled. */
+const MM_BASE_SCALE = 4;
 
 /**
  * The whole metro, live.
@@ -194,7 +201,15 @@ const MM_H = 230;
 function Minimap({ map }: { map: CityMap }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const base = useMemo(
-    () => renderCityMap(`hud-${MM_W}x${MM_H}`, MM_W, MM_H, map.data, map.water),
+    () =>
+      renderPlayableMap(
+        `hud-playable-${MM_W}x${MM_H}`,
+        MM_W,
+        MM_H,
+        MM_BASE_SCALE,
+        map.data,
+        map.water,
+      ),
     [map],
   );
   const [hover, setHover] = useState<string | null>(null);
@@ -207,7 +222,7 @@ function Minimap({ map }: { map: CityMap }) {
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      drawMinimapCentered(g, base, game.x, game.z, game.heading, MM_W, MM_H);
+      drawMinimapPlayable(g, base, game.x, game.z, game.heading, MM_W, MM_H);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -217,19 +232,15 @@ function Minimap({ map }: { map: CityMap }) {
 
   // Nearest place under the cursor, within a tolerance. A click that hits
   // nothing does nothing rather than guessing a destination.
-  // Click-to-travel on the CROPPED minimap.
   //
-  // The old handler projected the click through the whole-metro projector, which
-  // is only correct for the uncropped view. Now the map is a window around the
-  // player, so a click has to be inverted through the SAME crop the draw used.
-  // `minimapScreenToWorld` in citymap.ts owns that mapping so the two can never
-  // disagree.
+  // Inverted through the SAME DEV_BOUNDS projection the draw used, so the two
+  // can never disagree about where a pixel is.
   const at = (e: React.MouseEvent<HTMLCanvasElement>): string | null => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * MM_W;
     const py = ((e.clientY - rect.top) / rect.height) * MM_H;
     if (!base) return null;
-    const world = minimapScreenToWorld(base, px, py, MM_W, MM_H);
+    const world = playableScreenToWorld(px, py, MM_W, MM_H);
     let best: string | null = null;
     let bestD = 220; // metres — a click snaps to a place within ~one block
     for (const pl of PLACES) {

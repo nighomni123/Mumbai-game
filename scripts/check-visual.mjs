@@ -87,24 +87,31 @@ const { chromium } = await import(
 );
 
 let scene = null;
-if (existsSync("shots/enrich") || true) {
-  try {
-    const browser = await chromium.launch({ executablePath: exe, headless: true });
-    const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
-    const errors = [];
-    page.on("pageerror", (e) => errors.push(e.message.slice(0, 120)));
-    await page.goto("http://localhost:5173/dashboard", { waitUntil: "load", timeout: 60000 });
-    await page.waitForTimeout(13000);
-    scene = await page.evaluate(() => {
-      const i = window.__geo?.inspect?.();
-      const canvas = document.querySelector("canvas");
-      return { i, errors: [] };
-    });
-    scene.errors = errors;
-    await browser.close();
-  } catch (e) {
-    console.log(`skip live scene check — dev server unreachable (${String(e.message).slice(0, 60)})`);
-  }
+let browser = null;
+try {
+  browser = await chromium.launch({ executablePath: exe, headless: true });
+  const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message.slice(0, 120)));
+  await page.goto(`http://localhost:${process.env.PORT ?? 5173}/dashboard`, {
+    waitUntil: "load",
+    timeout: 60000,
+  });
+  await page.waitForTimeout(13000);
+  scene = await page.evaluate(() => {
+    const i = window.__geo?.inspect?.();
+    const canvas = document.querySelector("canvas");
+    return { i, errors: [] };
+  });
+  scene.errors = errors;
+} catch (e) {
+  console.log(`skip live scene check — dev server unreachable (${String(e.message).slice(0, 60)})`);
+} finally {
+  // MUST run even when page.goto throws. Chromium left open keeps a libuv
+  // handle alive, so node never exits and `bun run check` hangs forever after
+  // printing its final line. Verified 2026-10-01: 28 s + exit 0 with the dev
+  // server up, an indefinite hang with it down.
+  await browser?.close();
 }
 
 if (scene?.i) {
