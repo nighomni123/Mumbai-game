@@ -32,7 +32,8 @@
     "data:citymap": "node scripts/citymap.mjs",
     "data:starter": "node scripts/make-starter.mjs --force",
     "setup": "node scripts/ingest-mumbai.mjs && node scripts/enrich-chunks.mjs && node scripts/ingest-water.mjs && node scripts/land-mask.mjs && node scripts/citymap.mjs",
-    "bench:chunk": "bun scripts/bench-chunk.ts"
+    "bench:chunk": "bun scripts/bench-chunk.ts",
+    "bench:facet": "bun scripts/ab-facet.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
