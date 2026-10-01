@@ -3,8 +3,8 @@
  *
  * This is the "95% of buildings" tier. No building gets a bespoke mesh; every
  * one is assembled from a handful of boxes derived from its family grammar and
- * its own footprint, then merged with every other building in the chunk into
- * one buffer.
+ * its own footprint, and every building in a chunk appends into one shared
+ * buffer (src/geo/chunk-build.ts).
  *
  * Why boxes and not textures: at eye level the eye resolves window rhythm,
  * balconies, roof shape and colour — not plaster detail. Measured against the
@@ -394,7 +394,7 @@ export function buildBuilding(
 }
 
 /** The extruded prism of the true footprint. */
-function mass(
+export function mass(
   r: [number, number][],
   H: number,
   hex: number,
@@ -415,14 +415,24 @@ function mass(
     const k = 0.72 + 0.38 * Math.max(0, dot) - 0.06;
     // side quads
     out.quadY(a[0] + nx * 0.01, a[1] + nz * 0.01, b[0] + nx * 0.01, b[1] + nz * 0.01, y0, y0 + H, hex, k);
-    // top cap as a fan (rings here are convex enough in practice)
-    let cx = 0, cz = 0;
-    for (const p of r) { cx += p[0]; cz += p[1]; }
-    cx /= n; cz /= n;
-    for (let i = 0; i < n; i++) {
-      const a2 = r[i], b2 = r[(i + 1) % n];
-      out.tri(cx, y0 + H, cz, a2[0], y0 + H, a2[1], b2[0], y0 + H, b2[1], hex, 1.12);
-    }
+  }
+
+  // Top cap as ONE fan over the whole ring (rings here are convex enough in
+  // practice).
+  //
+  // This loop used to sit INSIDE the per-edge loop above — a shadowed `let i`
+  // hid it — so an n-vertex footprint drew its roof n times over. Measured on
+  // the shipped starter slice, whose rings average 7.66 vertices, that was
+  // 4.4x the triangles the city actually needs (896k instead of 202k). Every
+  // one of those triangles is coplanar overdraw at identical depth, so it was
+  // invisible: it cost fill rate, vertex bandwidth and a third of the whole
+  // chunk build, and drew nothing new.
+  let cx = 0, cz = 0;
+  for (const p of r) { cx += p[0]; cz += p[1]; }
+  cx /= n; cz /= n;
+  for (let i = 0; i < n; i++) {
+    const a2 = r[i], b2 = r[(i + 1) % n];
+    out.tri(cx, y0 + H, cz, a2[0], y0 + H, a2[1], b2[0], y0 + H, b2[1], hex, 1.12);
   }
 }
 

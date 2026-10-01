@@ -28,7 +28,7 @@ const SPOTS = [
 ];
 const TIER = (process.argv[2] ?? "a").toLowerCase();
 const PLACE = process.argv[3] ?? "2";
-const out = `shots/street/${TIER}p${PLACE}`;
+const out = process.env.SHOOT_OUT ?? `shots/street/${TIER}p${PLACE}`;
 mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch({ executablePath: exe, headless: true });
@@ -50,11 +50,25 @@ await page.waitForTimeout(1500);
 
 for (const [name, x, z, h] of SPOTS) {
   await page.evaluate(([x, z, h]) => window.__geo?.teleport?.(x, z, h), [x, z, h]);
-  await page.waitForTimeout(4200);
+  // Wait for the build queue to DRAIN, not for a fixed time. A fixed wait
+  // screenshots whatever happens to be resident 4.2 s after the teleport, so
+  // a faster build path and a slower one get compared at different points in
+  // the same load — and the missing chunks read as a rendering regression
+  // when they are only a load race. This is the fix: both sides are captured
+  // at the same state, "everything that was asked for has arrived".
+  await page
+    .waitForFunction(() => (window.__geo?.inspect?.()?.queued ?? 1) === 0, {
+      timeout: 30000,
+      polling: 250,
+    })
+    .catch(() => console.log(`  [warn] ${name}: build queue never drained`));
+  // One more settle so the final chunk's shadow flags and bounding volumes are
+  // resolved before the frame is captured.
+  await page.waitForTimeout(2500);
   const hud = await page.evaluate(() => document.body.innerText.replace(/\n+/g, " | "));
   const n = (k) => hud.match(new RegExp(k + " \\| ([^|]+)"))?.[1]?.trim() ?? "?";
   await page.screenshot({ path: `${out}/${name}.png` });
-  console.log(`  ${name.padEnd(17)} tris=${n("tris").padEnd(6)} draws=${n("draws").padEnd(4)} fps=${n("fps")}`);
+  console.log(`  ${name.padEnd(17)} chunks=${n("chunks").padEnd(6)} tris=${n("tris").padEnd(6)} draws=${n("draws").padEnd(4)} fps=${n("fps")}`);
 }
 console.log(`shot -> ${out}`);
 await browser.close();
