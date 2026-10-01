@@ -107,6 +107,11 @@ export const COMM = T_D || T_F;
 export const MOBIL = T_E || T_F;
 export const PEOPLE = T_F;
 
+/** `?place=1` reverts mobility to the pre-2026-09-30 uniform spacing. */
+const PLACE_UNIFORM =
+  typeof location !== "undefined" &&
+  new URLSearchParams(location.search).get("place") === "1";
+
 /* ------------------------------------------------------------------ *
  * Deterministic placement.
  * ------------------------------------------------------------------ */
@@ -377,6 +382,136 @@ export interface StreetKitOptions {
  * frame without costing anything per frame.
  */
 /**
+ * MOBILITY PLACEMENT — the depth-composition rule.
+ *
+ * Density is not the problem; composition is. Uniform 6.5 m spacing fills the
+ * near frame with the nearest vehicle and blocks the view down the street. The
+ * reference composes instead: a hero object in the foreground, an open middle
+ * distance, and continuity further off.
+ *
+ * WHY THIS IS CAMERA-INDEPENDENT, which is a real constraint and not a
+ * simplification. Chunk groups are built once and then frozen
+ * (`matrixAutoUpdate = false` in GeoCity), and a chunk is only rebuilt when it
+ * crosses the residency ring. A rule that read the camera would therefore be
+ * stale for as long as you stood still, and would pop every time a chunk
+ * rebuilt — a worse artefact than the one it fixes. So the rhythm is a property
+ * of the STREET, not of the viewer, and it is derived from arc length so it is
+ * stable across reloads.
+ *
+ * The acceptance pipeline, in order. The first four are exact; the last two are
+ * approximated by clustering, and it is worth being honest about that:
+ *
+ *   1. inside the parking band   exact   — offset from the centreline
+ *   2. orientation plausible      exact   — strictly along the street tangent
+ *   3. no overlap with a sibling  exact   — minimum gap by vehicle length
+ *   4. clear of the kerb ends     exact   — set-back from both polyline ends
+ *   5. not excessive near area    approx  — larger vehicles need a longer slot,
+ *                                         so small ones dominate by count
+ *   6. does not block the view    approx  — enforced by on/off CLUSTERS rather
+ *                                         than by looking down the sightline
+ */
+function placeMobility(
+  out: Facet,
+  path: [number, number][],
+  halfWidth: number,
+): void {
+  // Per-vehicle-length minimum gaps. This is where "more small objects than
+  // large ones" comes from: two cars need 8 m between them, two scooters need
+  // 3.5 m, so a crowded stretch naturally fills with scooters.
+  const SPEC = [
+    { make: parkedCar, slot: 6.5, len: 4.4, gap: 2.2, roll: 0.34 },
+    { make: bike, slot: 4.2, len: 1.9, gap: 1.4, roll: 0.5 },
+    { make: autoRickshaw, slot: 5.4, len: 2.8, gap: 1.8, roll: 0.16 },
+  ];
+  // Cluster period and the chance a period is occupied. A ~38 m period with
+  // roughly half the stretches empty gives the read: a busy patch, a gap, a busy
+  // patch — which is what a real kerb looks like and what stops the view.
+  const CLUSTER_M = 38;
+  const OCCUPIED = 0.52;
+  const END_SETBACK = 7;
+
+  // `?place=1` restores the old uniform 6.5 m rule, so placement V1 and V2 can
+  // be compared on the same poses. Kept because "the new one is better" is a
+  // claim that should remain checkable rather than becoming folklore.
+  if (PLACE_UNIFORM) {
+    for (const side of [SIDE.LEFT, SIDE.RIGHT]) {
+      for (const p of alongStreet(path, 6.5, side, halfWidth - 0.45, "caruni")) {
+        const yaw = Math.atan2(p.dz, p.dx) + (side === SIDE.LEFT ? 0 : Math.PI);
+        if (p.r > 0.82) autoRickshaw(out, p.x, p.z, yaw, p.r);
+        else if (p.r > 0.6) bike(out, p.x, p.z, yaw, p.r);
+        else if (p.r > 0.12) parkedCar(out, p.x, p.z, yaw, p.r);
+      }
+    }
+    return;
+  }
+
+  const total = pathLength(path);
+
+  for (const side of [SIDE.LEFT, SIDE.RIGHT]) {
+    // accepted positions on this side, so overlap can be rejected (check 3)
+    const taken: { s: number; len: number; gap: number }[] = [];
+    const band = halfWidth - 0.45;
+
+    // Walk the polyline by GLOBAL arc length. The first attempt walked it per
+    // OSM segment and reset the cursor, which restarted the cluster period at
+    // every vertex — so the rhythm was a function of how the road happened to be
+    // digitised rather than of the street. Arc length is the only stable
+    // measure here, and it is what makes the placement reproducible.
+    let travelled = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i], b = path[i + 1];
+      const dx = b[0] - a[0], dz = b[1] - a[1];
+      const seg = Math.hypot(dx, dz);
+      if (seg < 0.2) continue;
+      const ux = dx / seg, uz = dz / seg;
+      const nx = -uz * side, nz = ux * side;
+
+      for (let t = 0; t <= seg; t += 2.0) {
+        const at = travelled + t;
+        // 4. clear of the kerb ends
+        if (at < END_SETBACK || at > total - END_SETBACK) continue;
+
+        // 5. the cluster gate — what keeps sightlines open. Without it every
+        // slot fills and the nearest vehicle fills the near frame.
+        const period = Math.floor(at / CLUSTER_M);
+        if (hash01(`${period}|${side}|occ`) >= OCCUPIED) continue;
+
+        const r = hash01(`${Math.round(at)}|${side}|veh`);
+        let acc = 0, spec = SPEC[0];
+        for (const sp of SPEC) {
+          acc += sp.roll;
+          if (r < acc) { spec = sp; break; }
+        }
+
+        // 3. overlap rejection against everything already accepted on this side
+        let blocked = false;
+        for (const tk of taken) {
+          if (Math.abs(tk.s - at) < (tk.len + spec.len) / 2 + tk.gap) { blocked = true; break; }
+        }
+        if (blocked) continue;
+
+        // 1. inside the parking band, 2. aligned to the street tangent
+        const px = a[0] + ux * t + nx * band;
+        const pz = a[1] + uz * t + nz * band;
+        const yaw = Math.atan2(uz, ux) + (side === SIDE.LEFT ? 0 : Math.PI);
+        spec.make(out, px, pz, yaw, r);
+        taken.push({ s: at, len: spec.len, gap: spec.gap });
+      }
+      travelled += seg;
+    }
+  }
+}
+
+/** Total arc length of a polyline. */
+function pathLength(path: [number, number][]): number {
+  let n = 0;
+  for (let i = 0; i < path.length - 1; i++) {
+    n += Math.hypot(path[i + 1][0] - path[i][0], path[i + 1][1] - path[i][1]);
+  }
+  return n;
+}
+
+/**
  * Dress one street polyline, by road class.
  *
  * Why the class gating is not laziness. A Fort chunk carries 1,066 streets and
@@ -460,15 +595,7 @@ export function dressStreet(
       }
     }
     if (MOBIL) {
-      for (const sd of [SIDE.LEFT, SIDE.RIGHT]) {
-        for (const p of alongStreet(path, 6.5, sd, walk - 0.4, "car")) {
-          const yaw = Math.atan2(p.dz, p.dx) + (sd === SIDE.LEFT ? 0 : Math.PI);
-          const k = p.r;
-          if (k > 0.82) autoRickshaw(out, p.x, p.z, yaw, k);
-          else if (k > 0.6) bike(out, p.x, p.z, yaw, k);
-          else if (k > 0.12) parkedCar(out, p.x, p.z, yaw, k);
-        }
-      }
+      placeMobility(out, path, halfWidth);
     }
     if (VEG) {
       for (const sd of [SIDE.LEFT, SIDE.RIGHT]) {

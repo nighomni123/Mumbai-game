@@ -27,14 +27,15 @@ const SPOTS = [
   ["colaba-causeway", -5629, -18090, 0.4],
 ];
 const TIER = (process.argv[2] ?? "a").toLowerCase();
-const out = `shots/street/${TIER}`;
+const PLACE = process.argv[3] ?? "2";
+const out = `shots/street/${TIER}p${PLACE}`;
 mkdirSync(out, { recursive: true });
 
 const browser = await chromium.launch({ executablePath: exe, headless: true });
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
 page.on("pageerror", (e) => console.log(`  [pageerror] ${e.message.slice(0, 140)}`));
 
-await page.goto(`http://localhost:5173/dashboard?street=${TIER}`, {
+await page.goto(`http://localhost:5173/dashboard?street=${TIER}&place=${PLACE}`, {
   waitUntil: "load",
   timeout: 90000,
 });
