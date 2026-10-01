@@ -39,6 +39,43 @@ export const METRO_BOUNDS = { x0: -14730, x1: 52394, y0: -33504, y1: 48198 };
  */
 export const ACTIVE_BOUNDS = { x0: -14730, x1: 12148, y0: -20622, y1: 26673 };
 
+
+/**
+ * THE DEVELOPMENT EXPLORE AREA — a second, smaller cut inside ACTIVE_BOUNDS.
+ *
+ * ACTIVE_BOUNDS says what the pipeline is ALLOWED to build. DEV_BOUNDS says
+ * what you can currently WALK to, and it is deliberately much smaller so the
+ * city does not have to be finished before any of it is playable.
+ *
+ * Decided 2026-09-30: bounded by Juhu to the north and Ghatkopar to the east.
+ * That is Colaba, Fort, Kala Ghoda, Worli, Dadar, Parel, Bandra, Khar, Mahim and
+ * Juhu itself. Chembur, Ghatkopar, Powai, Vikhroli, Bhandup, the airport and
+ * everything north of Juhu is out of play for now.
+ *
+ * This is a SEPARATE constant on purpose. Shrinking ACTIVE_BOUNDS would also
+ * stop the ingest skipping the excluded area, so a rebuild would pull down
+ * chunks you cannot visit; and it would shrink the /map page, which should keep
+ * showing the whole metro. The map stays whole, the data stays whole, and only
+ * the explorable world is cut.
+ *
+ * MUST equal scripts/geo.mjs DEV_BOUNDS, like ACTIVE_BOUNDS does.
+ */
+export const DEV_BOUNDS = { x0: -14730, x1: 3156, y0: -20622, y1: 5500 };
+
+/**
+ * Whether a tile is inside the explore area.
+ *
+ * Separate from `tileInActive` on purpose: ACTIVE_BOUNDS decides what the
+ * ingest is allowed to fetch, DEV_BOUNDS decides what you can walk to. They
+ * will drift apart as more of the city opens, and collapsing them now would
+ * mean re-plumbing the ingest and the map every time.
+ */
+export function tileInDev(gx: number, gy: number): boolean {
+  const inBox = (x: number, y: number) =>
+    x >= DEV_BOUNDS.x0 && x <= DEV_BOUNDS.x1 && y >= DEV_BOUNDS.y0 && y <= DEV_BOUNDS.y1;
+  return inBox(gx * TILE_M, gy * TILE_M) || inBox(gx * TILE_M, (gy + 1) * TILE_M);
+}
+
 /** Whether a local-metre point is inside the build scope. */
 export function inActive(x: number, y: number): boolean {
   return (

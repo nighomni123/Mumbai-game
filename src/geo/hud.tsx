@@ -4,12 +4,26 @@ import { game, SPEED_MIN, SPEED_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
   renderCityMap,
-  drawMinimap,
-  projector,
+  drawMinimapCentered,
+  minimapScreenToWorld,
   type CityMap,
 } from "./citymap.js";
 import { toLocal } from "./geo-constants.js";
 import { PLACES } from "./places.js";
+import {
+  searchDestinations,
+  inDevArea,
+  KIND_LABEL,
+  type Destination,
+} from "./destinations.js";
+import {
+  Command,
+  CommandInput,
+  CommandList,
+  CommandEmpty,
+  CommandGroup,
+  CommandItem,
+} from "@/components/ui/command";
 import { Slider } from "@/components/ui/slider";
 
 function Card({
@@ -33,6 +47,129 @@ function Row({ k, v }: { k: string; v: string }) {
     <div className="flex justify-between gap-4">
       <span className="opacity-60">{k}</span>
       <span className="note">{v}</span>
+    </div>
+  );
+}
+
+
+/**
+ * Where do you want to go?
+ *
+ * A command palette rather than a bare input, because `cmdk` gives arrow-key
+ * navigation and fuzzy ranking for free and this is a keyboard-first world —
+ * the player is usually walking with WASD held. Opened with `/` or clicking the
+ * field; Escape closes it and the key is not swallowed by the world.
+ *
+ * Destinations outside the development explore area are still listed and still
+ * travel there — the data and the map are whole — but they are marked and sorted
+ * below what you can actually walk to, so the box never looks broken while the
+ * cut-off is in place.
+ */
+function SearchBar() {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const results = useMemo(
+    () => (q.trim() ? searchDestinations(q, 24) : []),
+    [q],
+  );
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const typing =
+        e.target instanceof HTMLElement &&
+        (e.target.tagName === "INPUT" || e.target.isContentEditable);
+      if (e.code === "Slash" && !typing) {
+        e.preventDefault();
+        setOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const go = (d: Destination) => {
+    game.goTo?.(d.name);
+    setOpen(false);
+    setQ("");
+  };
+
+  // Clear on close, not only on select. Otherwise dismissing with Escape leaves
+  // the last query in the box, the next "/" reopens with stale text, and the
+  // player has to backspace before they can type a new one.
+  const close = (next: boolean) => {
+    setOpen(next);
+    if (!next) setQ("");
+  };
+
+  return (
+    <div className="pointer-events-auto absolute left-1/2 top-3 -translate-x-1/2">
+      <button
+        type="button"
+        onClick={() => close(!open)}
+        className="sketch-soft note flex items-center gap-2 bg-card/92 px-3 py-2 text-sm opacity-90 backdrop-blur-[2px] hover:opacity-100"
+        aria-label="Search for a place to travel to"
+      >
+        <span className="opacity-60">Go to</span>
+        <span className="opacity-40">press /</span>
+      </button>
+
+      {open && (
+      <Command
+        className="absolute left-1/2 top-full z-20 mt-1 w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2"
+        shouldFilter={false}
+        onKeyDown={(e) => {
+          // cmdk's input swallows Escape for itself and only clears the query,
+          // so without this the panel cannot be dismissed with Escape at all —
+          // it just silently stays open, and the next click on the button closes
+          // it instead of opening it.
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            close(false);
+          }
+        }}
+      >
+        <CommandInput
+          autoFocus
+          value={q}
+          onValueChange={setQ}
+          placeholder="a landmark, a station, a place…"
+        />
+        <CommandList className="max-h-72">
+          <CommandEmpty>
+            {q.trim() ? "no match" : "type a name"}
+          </CommandEmpty>
+          {!q.trim() && (
+            <div className="note px-3 py-2 text-xs opacity-60">
+              Try CSMT, Gateway, Charni Road, Juhu.
+            </div>
+          )}
+          <CommandGroup>
+            {results.map((d) => {
+              const reachable = inDevArea(d);
+              return (
+                <CommandItem
+                  key={d.name + d.kind}
+                  value={d.name}
+                  onSelect={() => go(d)}
+                  className="gap-2"
+                >
+                  <span className="note">{d.name}</span>
+                  <span className="text-xs opacity-60">{KIND_LABEL[d.kind]}</span>
+                  {d.note && (
+                    <span className="ml-auto max-w-[12rem] truncate text-xs opacity-50">
+                      {d.note}
+                    </span>
+                  )}
+                  {!reachable && (
+                    <span className="text-xs opacity-70">outside</span>
+                  )}
+                </CommandItem>
+              );
+            })}
+          </CommandGroup>
+        </CommandList>
+      </Command>
+      )}
     </div>
   );
 }
@@ -70,7 +207,7 @@ function Minimap({ map }: { map: CityMap }) {
     let raf = 0;
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      drawMinimap(g, base, game.x, game.z, game.heading, MM_W, MM_H);
+      drawMinimapCentered(g, base, game.x, game.z, game.heading, MM_W, MM_H);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
@@ -80,16 +217,24 @@ function Minimap({ map }: { map: CityMap }) {
 
   // Nearest place under the cursor, within a tolerance. A click that hits
   // nothing does nothing rather than guessing a destination.
+  // Click-to-travel on the CROPPED minimap.
+  //
+  // The old handler projected the click through the whole-metro projector, which
+  // is only correct for the uncropped view. Now the map is a window around the
+  // player, so a click has to be inverted through the SAME crop the draw used.
+  // `minimapScreenToWorld` in citymap.ts owns that mapping so the two can never
+  // disagree.
   const at = (e: React.MouseEvent<HTMLCanvasElement>): string | null => {
     const rect = e.currentTarget.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * MM_W;
     const py = ((e.clientY - rect.top) / rect.height) * MM_H;
-    const p = projector(MM_W, MM_H);
+    if (!base) return null;
+    const world = minimapScreenToWorld(base, px, py, MM_W, MM_H);
     let best: string | null = null;
-    let bestD = 16;
+    let bestD = 220; // metres — a click snaps to a place within ~one block
     for (const pl of PLACES) {
       const l = toLocal(pl.lon, pl.lat);
-      const d = Math.hypot(p.x(l.x) - px, p.y(l.y) - py);
+      const d = Math.hypot(l.x - world.x, l.y - world.z);
       if (d < bestD) {
         bestD = d;
         best = pl.name;
@@ -97,6 +242,7 @@ function Minimap({ map }: { map: CityMap }) {
     }
     return best;
   };
+
   const pick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const name = at(e);
     setHover(name);
@@ -198,7 +344,7 @@ export function CityHud() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [open]);
   const lastToast = useRef(0);
   const lastPaint = useRef(0);
 
@@ -320,6 +466,7 @@ export function CityHud() {
         </div>
       )}
 
+      {!planet && <SearchBar />}
       {!planet && map && <Minimap map={map} />}
 
       <div className="absolute bottom-3 left-3 text-[11px] opacity-55">

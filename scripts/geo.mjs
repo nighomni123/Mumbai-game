@@ -109,6 +109,29 @@ export function tileInActive(gx, gy) {
 }
 
 /**
+ * The development explore area — a smaller cut inside ACTIVE_BOUNDS.
+ *
+ * Bounded by Juhu to the north and Ghatkopar to the east: Colaba, Fort, Kala
+ * Ghoda, Worli, Dadar, Parel, Bandra, Khar, Mahim and Juhu. Chembur, Ghatkopar,
+ * Powai, the airport and everything north of Juhu is out of play for now.
+ *
+ * A SEPARATE constant on purpose. Shrinking ACTIVE_BOUNDS would also stop the
+ * ingest skipping the excluded area and would shrink the /map page, both of
+ * which should stay whole. See src/geo/geo-constants.ts.
+ *
+ * MUST equal src/geo/geo-constants.ts DEV_BOUNDS.
+ */
+export const DEV_BOUNDS = { x0: -14730, x1: 3156, y0: -20622, y1: 5500 };
+
+/** @returns {boolean} whether a local-metre point is inside the explore area. */
+export function inDev(x, y) {
+  return (
+    x >= DEV_BOUNDS.x0 && x <= DEV_BOUNDS.x1 &&
+    y >= DEV_BOUNDS.y0 && y <= DEV_BOUNDS.y1
+  );
+}
+
+/**
  * @typedef {{ gx: number, gy: number }} TileId
  */
 

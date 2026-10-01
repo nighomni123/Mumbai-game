@@ -1,6 +1,8 @@
 # The chunk build arena
 
-Measured 2026-10-01. What changed, what it bought, and what is left.
+Measured 2026-10-01, re-measured 2026-10-01 after the typed-arena change.
+What changed, what it bought, what is left, and one measurement mistake worth
+reading before trusting any of it.
 
 ## What the chunk build used to do
 
@@ -41,60 +43,100 @@ would need, if the work ever has to leave the frame thread.
 therefore drew its roof **n times** — a shadowed `let i` hid it.
 
 The shipped starter slice averages 7.66 vertices per footprint, so that was
-**4.4x the triangles the city needed**: 896,180 instead of 202,308. All of it
-coplanar overdraw at identical depth, so it drew nothing new — it only cost
-fill rate, vertex bandwidth and about a third of the entire chunk build.
+**4.4x the triangles the city actually needs**: 896,180 instead of 202,308.
+Every one of those triangles is coplanar overdraw at identical depth, so it was
+invisible: it cost fill rate, vertex bandwidth and about a third of the entire
+chunk build.
 
-It affected every enriched building, including the setback crowns.
+`bun scripts/bench-chunk.ts` now asserts this cannot come back: it compares the
+triangles actually emitted against `3 x ring.length` for every unenriched
+building, and fails if the ratio exceeds 1.15.
 
-## Measured
+## The typed arena
 
-`bun scripts/bench-chunk.ts` — the whole shipped slice (17 chunks, 8,798
-buildings), both paths interleaved on the same data in one process so the
-comparison cannot drift with machine load.
+After the arena, `Facet` still pushed into plain JS arrays and only became
+typed at the end. Replacing those with growable `Float32Array`/`Uint8Array`
+plus a write cursor was the next experiment.
 
-| | before | after |
-|---|---|---|
-| chunk build, whole slice | 441.7 ms | 125.0 ms |
-| **speedup** | | **3.5x** |
+**It works, and it is worth roughly 2x on emit.** Both sides are the real
+implementations — the array one is commit `51b5aa0` in a git worktree — and
+they are interleaved, 15 rounds, minimum reported.
 
-In the running renderer, at six fixed street-level poses, captured after the
-build queue drained (so both sides show the same resident set):
+| | array-backed | typed growable | gain |
+|---|---|---|---|
+| starter slice, min | 34.2 ms | 20.1 ms | **1.70x** |
+| full metro, min | 4792.7 ms | 2427.3 ms | **1.97x** |
 
-| spot | chunks | tris before | tris after | Δ |
-|---|---|---|---|---|
-| fort-esplanade | 8 | 5,193k | 4,798k | −7.6% |
-| kala-ghoda | 10 | 7,077k | 6,481k | −8.4% |
-| gateway | 11 | 4,131k | 3,816k | −7.6% |
-| churchgate | 12 | 6,990k | 6,490k | −7.2% |
-| charni-road | 13 | 8,055k | 7,674k | −4.7% |
-| colaba-causeway | 12 | 3,731k | 2,585k | −30.7% |
+`scripts/ab-facet.ts` prints min / p25 / median, and proves the two sides are
+byte-identical before it times anything:
 
-Draw calls are unchanged at these poses. The triangle drop is the roof fix;
-the time drop is the arena.
+```
+equivalence: OK — 1,662,102 floats compared byte-for-byte
+```
+
+The win is mostly in the finalisation: `Uint8Array.from()` over a 1.66M-element
+JS array was 32% of the whole build. Typed storage makes it 6%.
 
 ### It is visually a no-op
 
-Pixel-diffed before/after at all six poses: **0.00–0.01% of pixels differ**, and
-every differing pixel falls inside one 25x57 box at (195,105) — the HUD's
-`fps`/`chunks` readout. The 3D render is pixel-identical.
+Six fixed street-level poses, captured after the build queue drained, array vs
+typed captured minutes apart with nothing else changed: **0 pixels differ
+outside the HUD's fps readout.** (Capture both sides at the same moment — a
+screenshot from an older commit will differ wherever the HUD has moved on.)
 
-That is the point: the unenriched buildings now go through the same `mass()`
-prism every enriched building already used, instead of a separate
-`THREE.ExtrudeGeometry` path, so there is one code path and one look.
+## A measurement mistake worth keeping
 
-## What is left, measured
+The first version of this experiment reported the typed arena as a wash —
+`0.90x`, `0.99x`, `1.07x` across three runs — and the typed change was reverted
+on that basis.
 
-After the change, where a full slice of the starter slice goes:
+**That comparison was void.** The harness imported `Facet` once and handed the
+same instance to both emitters, so the "array-backed" side was writing into the
+typed class. It measured the new implementation against itself, and the spread
+was pure machine noise.
 
-| phase | ms |
-|---|---|
-| emitting triangles into the `Facet` | 180.7 |
-| `computeVertexNormals` | 69.2 |
-| `computeBoundingSphere` | 64.7 |
-| Float32Array / Uint8Array conversion | 33.7 |
+Two lessons, both now encoded in the scripts:
 
-`Facet` still pushes into plain JS arrays (~1.66M pushes per slice). Writing
-into growable typed arrays instead is the next cheap win and needs no worker.
-After that, moving this path to a worker is the obvious next step — the seam is
-already in place and the payload is already one typed array per layer.
+1. **An oracle has to own its subject.** `ab-facet.ts` imports each side's own
+   `Facet` from its own tree, and refuses to report timings unless the byte
+   comparison passes first.
+2. **This box cannot resolve small differences.** Several agents share it, and
+   load averages of 25-50 turn a median into noise — the same code measured
+   18 ms and 122 ms in consecutive runs. Everything reports the **minimum** over
+   many rounds and prints the load average, so a reader can see how contended
+   the run was.
+
+## Where the remaining time goes
+
+`bun scripts/bench-chunk.ts` decomposes one complete build; the phases sum to
+the total. Shipped slice, minimum of 9 rounds:
+
+| phase | ms | |
+|---|---|---|
+| emit (all building geometry) | 29.9 | 51% |
+| array -> typed + attributes | 3.6 | 6% |
+| `computeVertexNormals` | 12.1 | 20% |
+| `computeBoundingSphere` | 13.6 | 23% |
+| **sum** | **59.2** | |
+
+So `emit` is now a bit over half, and the largest single remaining target is
+still the procedural generation itself.
+
+Two cheap ideas this measurement points at, in order:
+
+- **`computeBoundingBounds` is free.** Every vertex is already written once,
+  with nothing to copy: track min/max as they are emitted and set the bounding
+  sphere analytically. That removes 23% for the cost of four comparisons per
+  triangle.
+- **Normals may not be needed at all.** `Facet` already bakes a fixed
+  sun-azimuth face shade into the vertex **colour**; the comment above `box()`
+  says "no normal is ever needed". The geometry is still paying for
+  `computeVertexNormals` on unindexed data (20%). Whether the cel material
+  tolerates `MeshBasicMaterial` + baked colour is a real experiment, not an
+  assumption — it would change the lighting, so it needs the same pixel gate.
+
+## Not done, deliberately
+
+Workers. The seam is in place and the payload is already one typed array per
+layer, but neither of the two things above needs them, and doing them first
+would be paying the complexity before earning it.

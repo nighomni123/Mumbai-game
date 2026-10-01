@@ -415,7 +415,7 @@ export class GeoCity {
     }
 
     const kit = buildStreetKit(job.data.s ?? []);
-    const kitTriangles = kit ? Math.floor(kit.pos.length / 9) : 0;
+    const kitTriangles = kit ? Math.floor(kit.used / 9) : 0;
     if (kit) {
       const mesh = new THREE.Mesh(
         facetGeometry(kit),

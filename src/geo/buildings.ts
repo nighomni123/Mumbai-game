@@ -97,12 +97,33 @@ export interface BuildingIn {
 }
 
 /* ------------------------------------------------------------------ *
- * A buffer builder. Positions + Uint8 colours, same shape the chunk merge
- * already uses, so nothing downstream has to learn a new format.
+ * A buffer builder. Positions + Uint8 colours, written straight into
+ * growable typed storage.
+ *
+ * Every writer appends exactly 9 floats and 9 bytes per triangle, in the same
+ * order, so positions and colours stay index-aligned and one counter (`used`)
+ * tracks both. `pos.length` is CAPACITY; `used` is what was written, and it
+ * is what a consumer must read.
  * ------------------------------------------------------------------ */
 export class Facet {
-  pos: number[] = [];
-  col: number[] = [];
+  pos = new Float32Array(8192);
+  col = new Uint8Array(8192);
+  /** floats written (= bytes written; the two are index-aligned) */
+  used = 0;
+
+  /** Double the buffers until they can take `need` elements. */
+  private grow(need: number) {
+    let cap = this.pos.length;
+    if (need <= cap) return;
+    while (cap < need) cap *= 2;
+    const p = new Float32Array(cap);
+    p.set(this.pos);
+    this.pos = p;
+    const c = new Uint8Array(cap);
+    c.set(this.col);
+    this.col = c;
+  }
+
   /** @param hex 0xRRGGBB @param k brightness multiplier */
   tri(
     ax: number, ay: number, az: number,
@@ -110,11 +131,20 @@ export class Facet {
     cx: number, cy: number, cz: number,
     hex: number, k: number,
   ) {
+    this.grow(this.used + 9);
+    const p = this.pos;
+    const n = this.used;
+    p[n] = ax; p[n + 1] = ay; p[n + 2] = az;
+    p[n + 3] = bx; p[n + 4] = by; p[n + 5] = bz;
+    p[n + 6] = cx; p[n + 7] = cy; p[n + 8] = cz;
     const r = Math.min(255, (((hex >> 16) & 255) * k) | 0);
     const g = Math.min(255, (((hex >> 8) & 255) * k) | 0);
     const b = Math.min(255, ((hex & 255) * k) | 0);
-    this.pos.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-    this.col.push(r, g, b, r, g, b, r, g, b);
+    const c = this.col;
+    c[n] = r; c[n + 1] = g; c[n + 2] = b;
+    c[n + 3] = r; c[n + 4] = g; c[n + 5] = b;
+    c[n + 6] = r; c[n + 7] = g; c[n + 8] = b;
+    this.used = n + 9;
   }
 
   /** An axis-aligned box with per-face shading, which is what sells flat form. */
@@ -212,14 +242,22 @@ export class Facet {
 
   /** Merge another facet, offset in Y. */
   add(o: Facet, dy = 0) {
-    for (let i = 0; i < o.pos.length; i += 3) {
-      this.pos.push(o.pos[i], o.pos[i + 1] + dy, o.pos[i + 2]);
+    const m = o.used;
+    if (!m) return;
+    this.grow(this.used + m);
+    const src = o.pos;
+    const dst = this.pos;
+    const at = this.used;
+    for (let i = 0; i < m; i++) {
+      // dy rides the Y component, which is every third float
+      dst[at + i] = src[i] + (i % 3 === 1 ? dy : 0);
     }
-    for (let i = 0; i < o.col.length; i++) this.col.push(o.col[i]);
+    this.col.set(o.col.subarray(0, m), at);
+    this.used = at + m;
   }
 
   get empty() {
-    return this.pos.length === 0;
+    return this.used === 0;
   }
 }
 

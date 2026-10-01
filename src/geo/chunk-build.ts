@@ -26,13 +26,18 @@ const LEGACY_TONE: Record<string, number> = {
 /** What the hot path needs from a chunk's building record. */
 export type ChunkBuilding = BuildingIn & { t?: string; e?: Profile };
 
-/** Turn a Facet's parallel arrays into one geometry. */
+/**
+ * Turn a Facet into one geometry.
+ *
+ * `slice(0, used)` because `Facet.pos` is capacity, not content: handing
+ * three.js the whole buffer would draw the unused tail as garbage vertices.
+ */
 export function facetGeometry(f: Facet): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(f.pos, 3));
+  geo.setAttribute("position", new THREE.BufferAttribute(f.pos.slice(0, f.used), 3));
   geo.setAttribute(
     "color",
-    new THREE.BufferAttribute(Uint8Array.from(f.col), 3, true),
+    new THREE.BufferAttribute(f.col.slice(0, f.used), 3, true),
   );
   geo.computeVertexNormals();
   return geo;

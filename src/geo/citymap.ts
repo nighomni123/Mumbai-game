@@ -294,6 +294,112 @@ export function drawMinimap(
   g.stroke();
 }
 
+/**
+ * The player-centred minimap: the player pinned in the middle, the world sliding
+ * underneath.
+ *
+ * The whole-metro minimap is useless once you are walking, because 67 km in 188
+ * px is a third of a pixel per 100 m and you cannot tell a road from a block.
+ * This crops the SAME cached base bitmap to a window around the player, so the
+ * player marker never moves and the map pans. The base is not re-rendered per
+ * frame; only the source rectangle changes, so the cost is one drawImage.
+ *
+ * `spanM` is the ground width of the window in metres.
+ *
+ * The ceiling here is the cached base bitmap, not taste. That base is 188x230
+ * for the whole ~67x82 km metro, so it resolves about 356 m per pixel. A window
+ * much tighter than ~8 km is magnifying a handful of base pixels and reads as a
+ * colour blur — the first version used 2.2 km and the minimap was an unreadable
+ * red smear with the player dot correctly centred in it. 12 km gives ~34 base
+ * pixels across the width, which is soft but keeps the coastline, the major
+ * roads and the district shape legible. A genuinely zoomable minimap needs the
+ * base re-rendered at a higher resolution per view, which is a bigger change
+ * than this task took on.
+ */
+export function drawMinimapCentered(
+  g: CanvasRenderingContext2D,
+  base: HTMLCanvasElement,
+  x: number,
+  z: number,
+  heading: number,
+  w: number,
+  h: number,
+  spanM = 12000,
+): void {
+  g.clearRect(0, 0, w, h);
+  const p = projector(w, h);
+  // where the player is on the FULL metro bitmap
+  const fx = p.x(x);
+  const fy = p.y(z);
+  // how many bitmap pixels that span is, and the crop window
+  const bw = base.width;
+  const bh = base.height;
+  // scale from world metres to base pixels via the cached bitmap width
+  const mPerPx = (METRO_BOUNDS.x1 - METRO_BOUNDS.x0) / bw;
+  const cropW = Math.min(bw, spanM / mPerPx);
+  const cropH = Math.min(bh, spanM / mPerPx * (h / w));
+  let sx = fx - cropW / 2;
+  let sy = fy - cropH / 2;
+  sx = Math.max(0, Math.min(bw - cropW, sx));
+  sy = Math.max(0, Math.min(bh - cropH, sy));
+  g.drawImage(base, sx, sy, cropW, cropH, 0, 0, w, h);
+  lastCrop = { sx, sy, sw: cropW, sh: cropH, bw, bh };
+
+  // the player is now always the centre
+  const cx = w / 2;
+  const cy = h / 2;
+  g.save();
+  g.translate(cx, cy);
+  g.rotate(heading);
+  g.beginPath();
+  g.moveTo(0, 0);
+  g.arc(0, 0, 26, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5);
+  g.closePath();
+  g.fillStyle = "rgba(255,214,92,0.28)";
+  g.fill();
+  g.restore();
+
+  g.beginPath();
+  g.arc(cx, cy, 5, 0, Math.PI * 2);
+  g.fillStyle = "#c23a2c";
+  g.fill();
+  g.lineWidth = 2;
+  g.strokeStyle = "#fff";
+  g.stroke();
+}
+
+/**
+ * The crop `drawMinimapCentered` used, as a mapper from minimap screen pixels
+ * back to world metres.
+ *
+ * The draw and the click handler must invert the SAME crop or clicking teleports
+ * you somewhere the map is not showing. Rather than duplicate the crop maths in
+ * two places — which is exactly the drift this file has suffered from before —
+ * the draw records the crop it just used and this reads it back.
+ */
+let lastCrop: { sx: number; sy: number; sw: number; sh: number; bw: number; bh: number } | null = null;
+
+export function minimapScreenToWorld(
+  base: HTMLCanvasElement,
+  px: number,
+  py: number,
+  w: number,
+  h: number,
+): { x: number; z: number } {
+  const c = lastCrop;
+  if (!c) return { x: 0, z: 0 };
+  // screen -> base-bitmap pixel
+  const bx = c.sx + (px / w) * c.sw;
+  const by = c.sy + (py / h) * c.sh;
+  // base-bitmap pixel -> world metres
+  const mPerPx = (METRO_BOUNDS.x1 - METRO_BOUNDS.x0) / c.bw;
+  const mPerPxY = (METRO_BOUNDS.y1 - METRO_BOUNDS.y0) / c.bh;
+  return {
+    x: METRO_BOUNDS.x0 + bx * mPerPx,
+    z: METRO_BOUNDS.y1 - by * mPerPxY,
+  };
+}
+
 function hex(n: number): string {
   return `#${n.toString(16).padStart(6, "0")}`;
 }

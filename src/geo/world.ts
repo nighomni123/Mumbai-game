@@ -20,6 +20,7 @@ import { buildSky, buildDistantHills } from "../engine/sky.js";
 import { PAL } from "../engine/palette.js";
 import { METRO_BOUNDS, toLocal } from "./geo-constants.js";
 import { PLACES, PLACE_BY_NAME } from "./places.js";
+import { DESTINATIONS, inDevArea, KIND_LABEL } from "./destinations.js";
 import { GeoCity } from "./GeoCity.js";
 import { Walker } from "./walker.js";
 import {
@@ -197,12 +198,22 @@ export function mountCity(container: HTMLElement): CityHandle {
    * also a 1:1 journey.
    */
   game.goTo = (name: string) => {
-    const place = PLACE_BY_NAME.get(name.toLowerCase());
-    if (!place) return;
-    const l = toLocal(place.lon, place.lat);
-    handle.teleport(l.x, l.y, faceNearestOther(place.name, l.x, l.y));
+    // One entry point for every destination kind, so the search box, the map
+    // pins and the planet view all travel the same way and cannot drift.
+    const dest = DESTINATIONS.find((d) => d.name.toLowerCase() === name.toLowerCase());
+    if (!dest) return;
+    const l = toLocal(dest.lon, dest.lat);
+    if (!l) return;
+    handle.teleport(l.x, l.y, faceNearestOther(dest.name, l.x, l.y));
     setMapOverlay(null);
-    toast(place.name, place.region);
+    if (!inDevArea(dest)) {
+      toast(
+        dest.name,
+        `${KIND_LABEL[dest.kind]} — outside the area open for development, so nothing is built there yet`,
+      );
+    } else {
+      toast(dest.name, dest.note ?? KIND_LABEL[dest.kind]);
+    }
   };
 
   // --- input --------------------------------------------------------------
