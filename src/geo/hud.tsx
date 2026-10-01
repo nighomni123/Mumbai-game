@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { game, type Toast } from "./bridge";
+import { game, SPEED_MIN, SPEED_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
   renderCityMap,
@@ -10,6 +10,7 @@ import {
 } from "./citymap.js";
 import { toLocal } from "./geo-constants.js";
 import { PLACES } from "./places.js";
+import { Slider } from "@/components/ui/slider";
 
 function Card({
   className = "",
@@ -124,6 +125,42 @@ function Minimap({ map }: { map: CityMap }) {
         >
           open map
         </a>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The speed option.
+ *
+ * One slider, one multiplier, applied to walk, run and fly alike so the two
+ * halves of the world stay related — nothing here has a separate "fly speed".
+ * The value lives on the bridge because the walker reads it every frame and
+ * must never wait on a React render; the local copy exists only so the thumb
+ * tracks the pointer instead of the HUD's 5 Hz readout.
+ */
+function SpeedControl() {
+  const [mul, setMul] = useState(game.speedMul);
+  return (
+    <div className="mt-2 border-t border-foreground/30 pt-2">
+      <div className="flex justify-between text-xs">
+        <span className="opacity-60">speed</span>
+        <span className="note">×{mul.toFixed(1)}</span>
+      </div>
+      <Slider
+        value={[mul]}
+        min={SPEED_MIN}
+        max={SPEED_MAX}
+        step={0.5}
+        aria-label="movement speed multiplier"
+        onValueChange={([v]) => {
+          setMul(v);
+          game.speedMul = v;
+        }}
+        className="mt-1.5"
+      />
+      <div className="mt-1 text-[10px] opacity-60">
+        hold Z for a burst — up to 3×
       </div>
     </div>
   );
@@ -257,9 +294,10 @@ export function CityHud() {
           >
             <div className="display text-2xl">Greater Mumbai</div>
             <div className="mt-1 text-sm opacity-70">
-              click to walk · WASD move · Shift run · Space jump · double-tap
-              Space for admin power
+              click to walk · WASD move · Shift run · Space jump · hold Z to
+              burst · double-tap Space for admin power
             </div>
+        {!planet && <SpeedControl />}
             <div className="mt-1 text-sm opacity-70">
               press P for the whole city
             </div>

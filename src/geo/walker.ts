@@ -2,14 +2,18 @@
  * The walker: standing in real Greater Mumbai on the ground.
  *
  * This is a deliberate port of src/mumbai/player.ts, not a second controller.
- * The movement constants are copied verbatim — WALK 2.2, RUN 5.0, GRAVITY 18,
+ * The movement constants are the same — WALK 2.2, RUN 5.0, GRAVITY 18,
  * JUMP 5.0, EYE 1.70, CAM_DIST 4.0, FLY 12, SENS 0.0022 — so the authored
- * station and the real city feel like one product. Only two things changed:
+ * station and the real city feel like one product. Three things changed:
  *
  *   1. the collider source. The station has a hand-authored box list; this one
  *      collides against the real OSM footprint rings in the resident chunks.
  *   2. there is no district clamp and no rail-level ground. You are somewhere
  *      in 67 x 81 km, so the bounds are the metro's and the floor is flat.
+ *   3. walk/run/fly are all multiplied by `game.speedMul`, the HUD slider's
+ *      value, and by BOOST while Z is held. A 67 x 81 km city at 2.2 m/s is a
+ *      commute simulator; this is the one place the two worlds deliberately
+ *      stop matching, because the distances do not.
  *
  * Unify the two only when the authored station is retired; until then a shared
  * file would import both worlds' data and neither would want it.
@@ -23,7 +27,7 @@
  */
 
 import * as THREE from "three";
-import { game } from "./bridge.js";
+import { game, SPEED_MIN, SPEED_MAX } from "./bridge.js";
 import { PLACES } from "./places.js";
 import { toLocal } from "./geo-constants.js";
 import type { GeoCity } from "./GeoCity.js";
@@ -38,6 +42,8 @@ const CAM_DIST = 4.0;
 const SENS = 0.0022;
 /** Creative flight speed, m/s — same as every direction, as in Minecraft. */
 const FLY = 12;
+/** Hold-to-boost on top of the HUD slider, for crossing the metro in one go. */
+const BOOST = 3;
 const DOUBLE_TAP = 280;
 /** Player radius, and how far ahead of the feet a footprint is tested. */
 const RADIUS = 0.45;
@@ -301,6 +307,11 @@ export class Walker {
     const live = game.playing;
     let speed = 0;
     let near = 0;
+    // Clamped at the read, not at the write: the slider is bounded, but this is
+    // a plain mutable field and the dev harnesses set it directly.
+    const mul =
+      THREE.MathUtils.clamp(game.speedMul, SPEED_MIN, SPEED_MAX) *
+      (k.has("KeyZ") ? BOOST : 1);
 
     if (this.fly) {
       const cp = Math.cos(this.pitch);
@@ -310,7 +321,7 @@ export class Walker {
       const dz = -cos * cp * fwd - sin * str;
       const len = Math.hypot(dx, dy, dz);
       if (len > 1e-6) {
-        speed = live ? FLY : 0;
+        speed = live ? FLY * mul : 0;
         this.pos.x += (dx / len) * speed * dt;
         this.pos.y += (dy / len) * speed * dt;
         this.pos.z += (dz / len) * speed * dt;
@@ -325,29 +336,41 @@ export class Walker {
       if (dir.lengthSq() > 1e-6) dir.normalize();
       const target = live
         ? dir.lengthSq() > 1e-6
-          ? running
-            ? RUN
-            : WALK
+          ? (running ? RUN : WALK) * mul
           : 0
         : 0;
       this.vel.lerp(dir.multiplyScalar(target), 1 - Math.exp(-11 * dt));
 
-      this.pos.x += this.vel.x * dt;
-      this.pos.z += this.vel.z * dt;
-      // The metro is 67 x 81 km; clamp to it plus a margin rather than to a
-      // hand-authored district.
-      const m = 400;
-      this.pos.x = THREE.MathUtils.clamp(
-        this.pos.x,
-        this.bounds.x0 - m,
-        this.bounds.x1 + m,
+      // Collision resolves in steps no longer than RADIUS. A single resolve
+      // per frame is only correct while one frame of travel is smaller than
+      // the player, and at 10x with Z held that is 3.3 m against a 0.45 m body.
+      // ponytail: 8 substeps, so the ceiling is 3.6 m of travel per frame and
+      // tunnelling starts only past 30x at the 20 fps dt clamp. Past that the
+      // fix is a swept test against the ring, not a bigger cap.
+      const mx = this.vel.x * dt;
+      const mz = this.vel.z * dt;
+      const steps = Math.min(
+        8,
+        Math.max(1, Math.ceil(Math.hypot(mx, mz) / RADIUS)),
       );
-      this.pos.z = THREE.MathUtils.clamp(
-        this.pos.z,
-        this.bounds.y0 - m,
-        this.bounds.y1 + m,
-      );
-      near = this.resolve();
+      for (let i = 0; i < steps; i++) {
+        this.pos.x += mx / steps;
+        this.pos.z += mz / steps;
+        // The metro is 67 x 81 km; clamp to it plus a margin rather than to a
+        // hand-authored district.
+        const m = 400;
+        this.pos.x = THREE.MathUtils.clamp(
+          this.pos.x,
+          this.bounds.x0 - m,
+          this.bounds.x1 + m,
+        );
+        this.pos.z = THREE.MathUtils.clamp(
+          this.pos.z,
+          this.bounds.y0 - m,
+          this.bounds.y1 + m,
+        );
+        near = this.resolve();
+      }
 
       // Ground is flat: there is no terrain yet, so y = 0 everywhere. ponytail:
       // the floor is a constant until SRTM terrain lands; the upgrade is a

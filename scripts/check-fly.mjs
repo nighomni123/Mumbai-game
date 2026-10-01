@@ -1,12 +1,17 @@
 /**
- * Runnable check for the admin-power (Minecraft-creative) flight.
+ * Runnable check for the admin-power (Minecraft-creative) flight, and for the
+ * geo city's speed option, which scales the same three constants.
  *
- * Runs the real `Player` class headlessly: a `PerspectiveCamera` is pure maths
- * in three.js, and `update()` only ever touches the camera, the position and
- * the key set, so no WebGL and no browser are needed. `keys` is a plain
- * private-in-TS-only field, so the check can hold keys down directly instead
- * of faking a DOM — which keeps the test on the movement maths, the part
- * that is actually easy to get wrong.
+ * Runs the real `Player` and `Walker` classes headlessly: a
+ * `PerspectiveCamera` is pure maths in three.js, and `update()` only ever
+ * touches the camera, the position and the key set, so no WebGL and no browser
+ * are needed. `keys` is a plain private-in-TS-only field, so the check can hold
+ * keys down directly instead of faking a DOM — which keeps the test on the
+ * movement maths, the part that is actually easy to get wrong.
+ *
+ * Two `game` objects, deliberately: the authored station and the geographic
+ * city each have their own bridge, so the walker section below asserts against
+ * `geoGame` and cannot accidentally be satisfied by the station's state.
  *
  *   bun run check:fly
  */
@@ -14,6 +19,9 @@ import * as THREE from "three";
 import { Player } from "../src/mumbai/player.ts";
 import { game } from "../src/mumbai/bridge.ts";
 import { L } from "../src/mumbai/layout.ts";
+import { Walker } from "../src/geo/walker.ts";
+import { game as geoGame } from "../src/geo/bridge.ts";
+import { METRO_BOUNDS } from "../src/geo/geo-constants.ts";
 
 const DT = 1 / 60;
 let failed = 0;
@@ -252,6 +260,97 @@ console.log("admin power — creative flight");
   step(0.5);
   ok("no drift while paused", p.pos.distanceTo(before) < 1e-9);
   game.playing = true;
+}
+
+/* 10. the geo city's speed option: one multiplier over walk, run and fly */
+console.log("speed option — geo walker");
+
+/** A walker over a city stub offering only `wall`, a 1 m slab. */
+function rigWalker(wall = null, speedMul = 3) {
+  geoGame.playing = true;
+  geoGame.speedMul = speedMul;
+  const w = new Walker(
+    new THREE.PerspectiveCamera(52, 1.6, 0.25, 900),
+    /** @type {any} */ ({}),
+    // forEachBuildingNear returns how many footprints it offered the callback;
+    // the walker republishes that count as game.near. This stub offers the slab
+    // unconditionally rather than range-testing it, which is stricter.
+    /** @type {any} */ ({
+      forEachBuildingNear: (_x, _z, _r, cb) => {
+        if (!wall) return 0;
+        cb({ r: wall });
+        return 1;
+      },
+    }),
+    METRO_BOUNDS,
+  );
+  const keys = w.keys; // TS `private` is erased at runtime
+  const step = (secs) => {
+    for (let i = 0; i < Math.round(secs / DT); i++) w.update(DT);
+  };
+  return { w, keys, step };
+}
+
+/** Walk forward for a second and report the speed the walker settled on. */
+function walkSpeed(speedMul, extra = []) {
+  const { keys, step } = rigWalker(null, speedMul);
+  set(keys, "KeyW", ...extra);
+  step(1);
+  return geoGame.speed;
+}
+
+ok("default 3x makes a 2.2 m/s walk 6.6 m/s", Math.abs(walkSpeed(3) - 6.6) < 0.05,
+  `settled at ${walkSpeed(3).toFixed(2)} m/s`);
+ok("the slider reaches 1x, the real pace", Math.abs(walkSpeed(1) - 2.2) < 0.05,
+  `${walkSpeed(1).toFixed(2)} m/s`);
+ok("the slider reaches 10x", Math.abs(walkSpeed(10) - 22) < 0.1,
+  `${walkSpeed(10).toFixed(2)} m/s`);
+ok("a hand-set multiplier is clamped, not obeyed",
+  Math.abs(walkSpeed(9999) - 22) < 0.1, `${walkSpeed(9999).toFixed(2)} m/s`);
+ok("holding Z triples it again", Math.abs(walkSpeed(3, ["KeyZ"]) - 19.8) < 0.1,
+  `${walkSpeed(3, ["KeyZ"]).toFixed(2)} m/s`);
+ok("Z released is back to the slider's own speed",
+  Math.abs(walkSpeed(3) - 6.6) < 0.05);
+
+/* fly scales by the same multiplier, and by Z on top of it */
+{
+  const flySpeed = (mul, z) => {
+    const { w, keys, step } = rigWalker(null, mul);
+    w.setFly(true);
+    set(keys, ...(z ? ["KeyW", "KeyZ"] : ["KeyW"]));
+    const from = w.pos.clone();
+    step(0.5);
+    return w.pos.distanceTo(from) / 0.5;
+  };
+  ok("fly at the default 3x is 36 m/s", Math.abs(flySpeed(3, false) - 36) < 0.5,
+    `${flySpeed(3, false).toFixed(1)} m/s`);
+  ok("fly with Z held is 108 m/s", Math.abs(flySpeed(3, true) - 108) < 1,
+    `${flySpeed(3, true).toFixed(1)} m/s`);
+}
+
+/* 11. the reason collision is substepped: at 30x one frame crosses a metre of
+       wall, so a single resolve would put the player on the far side */
+{
+  // A 1 m slab across the path at z = 9.5..10.5, closed by repeating the first
+  // point — the resolve tests r.length - 1 edges, so the repeat is what closes
+  // the ring.
+  const wall = [
+    [-10, 10.5],
+    [10, 10.5],
+    [10, 9.5],
+    [-10, 9.5],
+    [-10, 10.5],
+  ];
+  const { w, keys, step } = rigWalker(wall, 10);
+  w.placeAt(0, 30, 0); // yaw 0: W heads for -z, straight at the slab
+  set(keys, "KeyW", "KeyZ");
+  step(3);
+  ok("the slab still stops a 66 m/s boosted walker", w.pos.z > 10.5,
+    `stopped at z ${w.pos.z.toFixed(2)}, slab face at 10.5`);
+  ok("and stops it clear, not merely not-inside", w.pos.z > 10.9,
+    `z ${w.pos.z.toFixed(2)}, expected ~10.95`);
+  ok("the slab was actually tested, not ignored", geoGame.near > 0,
+    `${geoGame.near} footprints tested`);
 }
 
 console.log(failed ? `\n${failed} failing` : "\nall green");

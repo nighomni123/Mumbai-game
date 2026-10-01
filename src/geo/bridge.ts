@@ -18,6 +18,18 @@ export interface Toast {
 
 export type WorldMode = "world" | "planet";
 
+/**
+ * The speed option's range, in multiples of the walker's own WALK/RUN/FLY.
+ *
+ * Shared rather than repeated so the slider the HUD draws and the clamp the
+ * walker applies cannot drift apart. 1x is the real-world pace; 10x is a fast
+ * scooter across a 67 x 81 km city. The default is 3x because walking 2.2 m/s
+ * to Kala Ghoda from Fort is four minutes of nothing happening.
+ */
+export const SPEED_MIN = 1;
+export const SPEED_MAX = 10;
+export const SPEED_DEFAULT = 3;
+
 export const game = {
   /** Input captured and the player is on foot. */
   playing: false,
@@ -26,6 +38,13 @@ export const game = {
   /** Creative flight, shared with the authored world's `admin power` toggle. */
   fly: false,
   setFly: null as null | ((on: boolean) => void),
+  /**
+   * Movement speed multiplier, written by the HUD slider and read by the
+   * walker every frame. On the bridge rather than in React state because the
+   * render loop must never wait on a render. Clamped to [SPEED_MIN, SPEED_MAX]
+   * at the read, so a stale or hand-set value cannot make the city unplayable.
+   */
+  speedMul: SPEED_DEFAULT,
   /** Live player transform in local metres, written every frame. */
   x: 0,
   y: 0,
