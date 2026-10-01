@@ -124,9 +124,18 @@ here — two copies drift, and a stale one is worse than none.
 What follows is only what the README does not tell you.
 
 ### Package manager
-- **`bun`**, never npm or pnpm. (`bun.lock` is authoritative; a stale
-  `package-lock.json` is also checked in — leave both alone, just don't add a
-  third lockfile.)
+- **`bun`**, never npm or pnpm. `bun.lock` is the ONLY lockfile — the stale
+  `package-lock.json` was deleted 2026-09-30. Do not add a third lockfile, and
+  do not run `npm ci`: it installs strictly from its lockfile, and the old one
+  never listed `three`, so it produced a tree the 3D world cannot build.
+- **Why it matters, since the two look interchangeable when running:** both
+  `bun run dev` and `npm run dev` just exec `node_modules/.bin/vite` and behave
+  identically *today*. The difference is who owns the tree. `node_modules` was
+  installed by bun — there is no `node_modules/.package-lock.json`, which npm
+  writes on every install — and `npm ls` reports much of it as `extraneous`
+  while `bun pm ls` reads all 450 packages clean. `npm install` does not just
+  do nothing wrong-looking, it rewrites the lockfile and drifts you toward the
+  broken state above.
 - Dev server is `bun run dev`. Build is `bun run build` (`tsc -b && vite build`).
   `main.ts` at the repo root is a Deno/Hono static server for `dist/`.
 
