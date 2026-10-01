@@ -472,23 +472,46 @@ export function mass(
     out.quadY(a[0] + nx * 0.01, a[1] + nz * 0.01, b[0] + nx * 0.01, b[1] + nz * 0.01, y0, y0 + H, hex, k);
   }
 
-  // Top cap as ONE fan over the whole ring (rings here are convex enough in
-  // practice).
+  // The roof cap.
   //
-  // This loop used to sit INSIDE the per-edge loop above — a shadowed `let i`
-  // hid it — so an n-vertex footprint drew its roof n times over. Measured on
-  // the shipped starter slice, whose rings average 7.66 vertices, that was
-  // 4.4x the triangles the city actually needs (896k instead of 202k). Every
-  // one of those triangles is coplanar overdraw at identical depth, so it was
-  // invisible: it cost fill rate, vertex bandwidth and a third of the whole
-  // chunk build, and drew nothing new.
-  let cx = 0, cz = 0;
-  for (const p of r) { cx += p[0]; cz += p[1]; }
-  cx /= n; cz /= n;
-  for (let i = 0; i < n; i++) {
-    const a2 = r[i], b2 = r[(i + 1) % n];
-    out.tri(cx, y0 + H, cz, a2[0], y0 + H, a2[1], b2[0], y0 + H, b2[1], hex, 1.12);
+  // This used to be ONE triangle fan from the ring centroid, carrying the
+  // comment "rings here are convex enough in practice". They are not. Measured
+  // over all 260,890 enriched rings (`bun scripts/audit-rings.mjs`): 27.5% are
+  // concave, 19.33% made the fan overshoot the footprint, and it drew 8.16 km2
+  // of roof OUTSIDE the buildings it was capping — 8.24% of all roof area.
+  //
+  // The worst case is not subtle. b_315613914 (chunk_-1_1) is a 180-vertex ring
+  // a kilometre across; its fan covered 3.62x the true footprint, hanging a
+  // 620 x 610 m phantom plane at H=30. That is the reported "large triangular
+  // polygons where they should not be" and "roofs stretched across empty
+  // space". `bun scripts/repro-roof.mjs b_315613914 chunk_-1_1.json` renders the
+  // fan and the fix side by side against the true outline.
+  //
+  // Ear clipping is exact on the same corpus: worst area error 2.15e-8, zero
+  // throws, zero non-finite output. It is also the correct primitive — a fan
+  // is only ever valid for a convex ring.
+  const y = y0 + H;
+  // OSM rings repeat the first vertex to close; triangulateShape must not see it.
+  const cap =
+    r[0][0] === r[n - 1][0] && r[0][1] === r[n - 1][1] ? r.slice(0, -1) : r;
+  const pts = cap.map(([x, z]) => new THREE.Vector2(x, z));
+  const faces = THREE.ShapeUtils.triangulateShape(pts, []);
+  for (let i = 0; i < faces.length; i++) {
+    const a2 = pts[faces[i][0]], b2 = pts[faces[i][1]], c2 = pts[faces[i][2]];
+    // normal.y = -(2D cross of b-a, c-a), so the cap faces up when that cross is
+    // NEGATIVE. Ear clipping does not emit a uniform winding over this corpus
+    // (measured: 1.12M of ~1.48M faces came out down-facing), so it is corrected
+    // per triangle — get this backwards and FrontSide culls the whole roof.
+    if ((b2.x - a2.x) * (c2.y - a2.y) - (b2.y - a2.y) * (c2.x - a2.x) > 0) {
+      out.tri(a2.x, y, a2.y, c2.x, y, c2.y, b2.x, y, b2.y, hex, 1.12);
+    } else {
+      out.tri(a2.x, y, a2.y, b2.x, y, b2.y, c2.x, y, c2.y, hex, 1.12);
+    }
   }
+  // ponytail: 19 of 260,890 rings are self-intersecting and ear clipping drops a
+  // vertex, leaving an unfilled patch in the roof. All 19 are 48-1196 m2 sheds
+  // 8-11 m tall, so the gap is a few pixels; a hole-aware triangulator is the
+  // upgrade path if that ever stops being true.
 }
 
 /**

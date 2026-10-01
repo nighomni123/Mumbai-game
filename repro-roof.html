@@ -1,0 +1,179 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>roof cap repro</title>
+    <style>
+      body { margin: 0; background: #101418; }
+      #label { color: #9fb0bd; font: 13px ui-monospace, monospace; padding: 8px 10px; }
+    </style>
+  </head>
+  <body>
+    <div id="label"></div>
+    <div id="c"></div>
+    <script type="module">
+      import * as T from "three";
+
+      /**
+       * Render ONE footprint's roof cap, nothing else. `mode` picks the
+       * triangulation. The true footprint outline is drawn on top, so any roof
+       * outside that black line is geometry that has no business being there.
+       *
+       * Triangle winding is forced upward in BOTH modes — this experiment is
+       * about coverage, not about winding, and a flipped roof would hide the
+       * very spill we are measuring.
+       */
+      window.run = (ring, H, mode) => {
+        const W = 1100, Hh = 800;
+        document.getElementById("c").innerHTML = "";
+        const r = new T.WebGLRenderer({ antialias: true });
+        r.setSize(W, Hh);
+        document.getElementById("c").appendChild(r.domElement);
+
+        const sc = new T.Scene();
+        sc.background = new T.Color(0x101418);
+        const cam = new T.PerspectiveCamera(38, W / Hh, 1, 20000);
+
+        const p = ring.slice();
+        if (p[0][0] === p[p.length - 1][0] && p[0][1] === p[p.length - 1][1]) p.pop();
+
+        let cx = 0, cz = 0;
+        for (const q of p) { cx += q[0]; cz += q[1]; }
+        cx /= p.length; cz /= p.length;
+        let ext = 1;
+        for (const q of p) ext = Math.max(ext, Math.hypot(q[0] - cx, q[1] - cz));
+        const d = ext * 2.4;
+        cam.position.set(cx + d * 0.5, d * 0.72, cz + d * 0.5);
+        cam.lookAt(cx, 0, cz);
+
+        const pos = [];
+        // normal.y = uz*vx - ux*vz = -(2D cross of (b-a)x(c-a)), so an UPWARD
+        // normal means the 2D cross must be NEGATIVE. Getting this backwards
+        // back-face-culls the entire roof and reads as "no bug at all".
+        const push = (a, b, c) => {
+          if ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0) {
+            const t = b; b = c; c = t;
+          }
+          pos.push(a[0], H, a[1], b[0], H, b[1], c[0], H, c[1]);
+        };
+
+        let faces;
+        if (mode === "fan") {
+          for (let i = 0; i < p.length; i++) push([cx, cz], p[i], p[(i + 1) % p.length]);
+          faces = p.length;
+        } else {
+          const pts = p.map(([x, z]) => new T.Vector2(x, z));
+          const fs = T.ShapeUtils.triangulateShape(pts, []);
+          // ShapeUtils hands back Vector2, which is NOT indexable — push
+          // plain [x, z] pairs or every coordinate lands as undefined.
+          for (const f of fs) {
+            push([pts[f[0]].x, pts[f[0]].y], [pts[f[1]].x, pts[f[1]].y], [pts[f[2]].x, pts[f[2]].y]);
+          }
+          faces = fs.length;
+        }
+
+        const g = new T.BufferGeometry();
+        g.setAttribute("position", new T.Float32BufferAttribute(pos, 3));
+        g.computeVertexNormals();
+        sc.add(new T.Mesh(g, new T.MeshBasicMaterial({ color: 0xffb03a })));
+
+        const lg = new T.BufferGeometry().setFromPoints([
+          ...p.map(([x, z]) => new T.Vector3(x, H + 2, z)),
+          new T.Vector3(p[0][0], H + 2, p[0][1]),
+        ]);
+        sc.add(new T.Line(lg, new T.LineBasicMaterial({ color: 0x000000 })));
+
+        const gp = new T.PlaneGeometry(ext * 8, ext * 8).rotateX(-Math.PI / 2);
+        gp.translate(cx, 0, cz);
+        sc.add(new T.Mesh(gp, new T.MeshBasicMaterial({ color: 0x2b343c })));
+
+        r.render(sc, cam);
+        document.getElementById("label").textContent =
+          `${mode.toUpperCase()} — ${faces} triangles, ${p.length} ring vertices`;
+        return { tris: pos.length / 9, faces };
+      };
+
+      /**
+       * Every roof cap in a chunk, nothing else — no walls, no streets, no
+       * decorations, no post. From above, because that is the only angle at
+       * which a phantom roof plane is visible: at ground level a 30 m roof 700 m
+       * away is a 2-degree grazing angle and the neighbouring 30 m buildings
+       * hide it completely.
+       */
+      window.runChunk = (list, mode) => {
+        const W = 1200, Hh = 900;
+        document.getElementById("c").innerHTML = "";
+        const r = new T.WebGLRenderer({ antialias: true });
+        r.setSize(W, Hh);
+        document.getElementById("c").appendChild(r.domElement);
+        const sc = new T.Scene();
+        sc.background = new T.Color(0x101418);
+        const cam = new T.PerspectiveCamera(42, W / Hh, 1, 40000);
+
+        const pos = [], cols = [];
+        let tris = 0;
+        for (let bi = 0; bi < list.length; bi++) {
+          const ring = list[bi].r, H = list[bi].H;
+          const p = ring.slice();
+          if (p[0][0] === p[p.length - 1][0] && p[0][1] === p[p.length - 1][1]) p.pop();
+          if (p.length < 3) continue;
+          // a per-building tint so an over-large cap is obvious as "wrong shape"
+          const hue = 0.08 + ((bi * 0.618) % 1) * 0.12;
+          const col = new T.Color().setHSL(hue, 0.75, 0.55);
+          const before = pos.length / 3;
+
+          const push = (a, b, c) => {
+            if ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0) {
+              const t = b; b = c; c = t;
+            }
+            pos.push(a[0], H, a[1], b[0], H, b[1], c[0], H, c[1]);
+            // separate array: interleaving them makes the position/color split
+            // ambiguous and silently produces an empty colour attribute
+            for (let k = 0; k < 3; k++) cols.push(col.r, col.g, col.b);
+          };
+
+          if (mode === "fan") {
+            let cx = 0, cz = 0;
+            for (const q of p) { cx += q[0]; cz += q[1]; }
+            cx /= p.length; cz /= p.length;
+            for (let i = 0; i < p.length; i++) push([cx, cz], p[i], p[(i + 1) % p.length]);
+          } else {
+            const pts = p.map(([x, z]) => new T.Vector2(x, z));
+            for (const f of T.ShapeUtils.triangulateShape(pts, [])) {
+              push([pts[f[0]].x, pts[f[0]].y], [pts[f[1]].x, pts[f[1]].y], [pts[f[2]].x, pts[f[2]].y]);
+            }
+          }
+          tris += (pos.length / 3 - before) / 3;
+        }
+
+        const g = new T.BufferGeometry();
+        g.setAttribute("position", new T.Float32BufferAttribute(pos, 3));
+        g.setAttribute("color", new T.Float32BufferAttribute(cols, 3));
+        g.computeVertexNormals();
+        sc.add(new T.Mesh(g, new T.MeshBasicMaterial({ vertexColors: true })));
+
+        // frame the data, not a guessed chunk origin
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, hmax = 1;
+        for (const b of list) for (const [x, z] of b.r) {
+          if (x < x0) x0 = x; if (x > x1) x1 = x;
+          if (z < z0) z0 = z; if (z > z1) z1 = z;
+          if (b.H > hmax) hmax = b.H;
+        }
+        const mx = (x0 + x1) / 2, mz = (z0 + z1) / 2;
+        const span = Math.max(x1 - x0, z1 - z0, 400);
+        const gp = new T.PlaneGeometry(span * 4, span * 4).rotateX(-Math.PI / 2);
+        gp.translate(mx, 0, mz);
+        sc.add(new T.Mesh(gp, new T.MeshBasicMaterial({ color: 0x232b31 })));
+
+        cam.position.set(mx + span * 0.55, span * 0.95, mz + span * 0.85);
+        cam.lookAt(mx, hmax * 0.3, mz);
+        cam.far = span * 12;
+        cam.updateProjectionMatrix();
+        r.render(sc, cam);
+        document.getElementById("label").textContent =
+          `CHUNK roofs ${mode.toUpperCase()} — ${tris} triangles, ${list.length} buildings`;
+        return { tris };
+      };
+    </script>
+  </body>
+</html>
