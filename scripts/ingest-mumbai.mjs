@@ -25,6 +25,7 @@ import {
   tileBounds,
   TILE_M,
   METRO_BOUNDS,
+  inActive,
   ringAreaM2,
   centroid,
 } from "./geo.mjs";
@@ -138,6 +139,12 @@ async function buildTile(t, wantLayers, fields) {
       const ring = poly[0];
       const area = ringAreaM2(ring);
       const c = centroid(ring);
+      // Skip the parts of the metro we are not building yet: the eastern
+      // mainland and Navi Mumbai, the far north, and the Konkan hills. Keeps
+      // the next build's chunks smaller instead of shipping a city that is
+      // 80% out of scope. METRO_BOUNDS still governs which tiles are queried.
+      const p = toLocal(c.lon, c.lat);
+      if (!inActive(p.x, p.y)) continue;
       outObj.buildings.push({
         id: f.attributes.osm_id || `a${f.attributes.OBJECTID}`,
         src: "mumbai_wfl1",

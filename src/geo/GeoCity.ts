@@ -17,7 +17,12 @@
 
 import * as THREE from "three";
 import { cel, flat } from "../engine/toon.js";
-import { TILE_M, tileOf } from "./geo-constants.js";
+import { TILE_M, tileOf, tileInActive } from "./geo-constants.js";
+import { Facet, buildBuilding } from "./buildings.js";
+import type { Profile } from "./buildings.js";
+import { dressStreet, blockPlanting } from "./street.js";
+import { hash01, tint } from "./vocab.js";
+import { PAL } from "../engine/palette.js";
 import { fetchData } from "./data-path.js";
 
 /** A render building: footprint ring(s) in local metres + resolved height. */
@@ -36,6 +41,10 @@ interface RenderBuilding {
   hc: number;
   sp: number;
   src: string;
+  /** visual profile, present once scripts/enrich-families.mjs has run */
+  e?: Profile;
+  /** ring edge indices fronting a street */
+  fx?: number[];
 }
 
 /** What a chunk file parses to. */
@@ -88,18 +97,77 @@ function buildingGeometry(
  * on each chunk swap. This cuts material allocation and shader-state churn
  * across the whole city (was ~245 live materials, one per class per chunk).
  */
-const MATERIAL_POOL = new Map<string, THREE.Material>();
-function materialFor(cls: string): THREE.Material {
-  const existing = MATERIAL_POOL.get(cls);
-  if (existing) return existing;
-  const created = cel({
+let SHARED_MATERIAL: THREE.Material | null = null;
+function materialFor(): THREE.Material {
+  if (SHARED_MATERIAL) return SHARED_MATERIAL;
+  SHARED_MATERIAL = cel({
     color: 0xffffff,
     vertexColors: true,
     bands: 3,
     cache: false,
   }) as THREE.Material;
-  MATERIAL_POOL.set(cls, created);
-  return created;
+  return SHARED_MATERIAL;
+}
+
+/**
+ * Every building in a chunk merges into ONE bucket.
+ *
+ * This used to be one bucket per facade class with one material per class, and
+ * those materials were byte-identical — the per-building colour rides in the
+ * vertex colour attribute, so the material carries no class information at all.
+ * Seven identical materials and seven draw calls per chunk became one of each.
+ */
+const BUCKET = "all";
+
+/** The flat tone an unenriched building gets, by facade class. */
+const LEGACY_TONE: Record<string, number> = {
+  industrial: 0x8a8175,
+  commercial: 0x8f9bb0,
+  institutional: 0xc9c0ae,
+  religious: 0xd8c7a0,
+  apartments: 0xbfa88f,
+  residential: 0xd0be9c,
+};
+
+/** Turn a Facet's parallel arrays into the geometry the chunk merge expects. */
+function facetGeometry(f: Facet): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(f.pos, 3));
+  geo.setAttribute(
+    "color",
+    new THREE.BufferAttribute(Uint8Array.from(f.col), 3, true),
+  );
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/**
+ * Asphalt tone families for the carriageway.
+ *
+ * Same reason as the ground: measured 2026-09-30, the road was one flat colour
+ * covering ~21% of a street frame and returned the identical tone in five of six
+ * sampled columns. These give the patch-and-damp variation real asphalt has
+ * without ever going bright — the road should never compete with the buildings.
+ */
+const ROAD_TONES = [PAL.road, PAL.roadLight, PAL.roadPatch, PAL.roadDamp];
+
+const ROAD_TMP = new THREE.Color();
+
+/** Tinted road quad, hashed off the quad's own position so it is stable. */
+function roadQuad(
+  road: Strip,
+  a: [number, number], b: [number, number],
+  c: [number, number], d: [number, number],
+  y: number,
+) {
+  const mx = Math.round((a[0] + c[0]) / 2);
+  const my = Math.round((a[1] + c[1]) / 2);
+  const h = hash01(`${mx},${my}`);
+  // one dominant patch family, plus a damp band that reads as recent rain
+  const t = Math.min(ROAD_TONES.length - 1, Math.floor(h * ROAD_TONES.length));
+  ROAD_TMP.setHex(ROAD_TONES[t]);
+  ROAD_TMP.multiplyScalar(0.96 + hash01(`${mx},${my},k`) * 0.08);
+  road.quad(a, b, c, d, y, ROAD_TMP);
 }
 
 /** Hard ceiling on how far geometry is ever drawn, whatever the altitude. */
@@ -226,6 +294,11 @@ export class GeoCity {
     const wanted = new Set<string>();
     for (let dx = -this.loadRadius; dx <= this.loadRadius; dx++) {
       for (let dz = -this.loadRadius; dz <= this.loadRadius; dz++) {
+        // The eastern mainland, the far north and the Konkan hills are not
+        // being built yet (ACTIVE_BOUNDS). Skipping them here means they are
+        // never fetched, never built and never resident — the cheapest possible
+        // way to not have them, and it shrinks the ring that does exist.
+        if (!tileInActive(cx + dx, cy + dz)) continue;
         wanted.add(`${cx + dx},${cy + dz}`);
       }
     }
@@ -296,6 +369,39 @@ export class GeoCity {
   }
 
   /**
+   * The enrichment summary of every resident chunk, merged.
+   *
+   * This is what makes the pipeline inspectable. The failure mode of a
+   * classification system is a silent fallback to the default — every id is a
+   * string, so a typo does not fail a build, it fails quietly — so the QA
+   * overlay needs the counts of what actually landed.
+   */
+  get enrichment(): ChunkEnrichSummary {
+    const families = new Set<string>();
+    const palettes = new Set<string>();
+    const landmarks = new Set<string>();
+    let buildings = 0, enriched = 0, fronted = 0;
+    for (const entry of this.chunks.values()) {
+      const e = entry.enrich;
+      if (!e) continue;
+      buildings += e.buildings;
+      enriched += e.enriched;
+      fronted += e.fronted;
+      for (const f of e.families) families.add(f);
+      for (const p of e.palettes) palettes.add(p);
+      for (const l of e.landmarks) landmarks.add(l);
+    }
+    return {
+      buildings,
+      enriched,
+      fronted,
+      families: [...families].sort(),
+      palettes: [...palettes].sort(),
+      landmarks: [...landmarks].sort(),
+    };
+  }
+
+  /**
    * Advance one queued chunk by a slice of work. Returns true when the chunk
    * is still building (call again next slice), false when it is done and can
    * be dropped from the queue. Extrusion happens in batches so no single slice
@@ -314,31 +420,81 @@ export class GeoCity {
     const list = job.data.b ?? [];
     const batch = 24;
 
+    // QA: what this chunk's enrichment actually contains. Counted here because
+    // this is the one place every building in the chunk passes through.
+    if (!st.enrich) {
+      const families = new Set<string>();
+      const palettes = new Set<string>();
+      const landmarks = new Set<string>();
+      let enriched = 0, fronted = 0;
+      for (const b of list) {
+        if (b.e) {
+          enriched++;
+          families.add(b.e.f);
+          if (b.e.p) palettes.add(b.e.p);
+          if (b.e.l) landmarks.add(b.e.l);
+        }
+        if (b.fx?.length) fronted++;
+      }
+      st.enrich = {
+        buildings: list.length,
+        enriched,
+        fronted,
+        families: [...families].sort(),
+        palettes: [...palettes].sort(),
+        landmarks: [...landmarks].sort(),
+      };
+    }
+
     while (st.i < list.length) {
       const b = list[st.i++];
-      const cls = b.t || "residential";
-      // One merged mesh per class per chunk = one draw call per class per
-      // chunk, which is what keeps the whole city cheap.
-      const geo = buildingGeometry(b.r, b.H);
-      this.paintGeometry(geo, this.facadeColor(cls, b, Math.random));
-      const bucket = st.byClass.get(cls);
+      let geo: THREE.BufferGeometry;
+      if (b.e) {
+        // Enriched: the family's grammar, so banding, windows, balconies and
+        // roof clutter all come from the profile rather than a flat prism.
+        const facet = new Facet();
+        buildBuilding(b, b.e, facet);
+        geo = facetGeometry(facet);
+      } else {
+        // Not enriched yet: the plain prism, exactly as before. A chunk with no
+        // `e` fields must keep working, because enrichment is progressive.
+        geo = buildingGeometry(b.r, b.H);
+        this.paintGeometry(geo, this.facadeColor(b.t || "residential", b));
+      }
+      const bucket = st.byClass.get(BUCKET);
       if (bucket) bucket.push(geo);
-      else st.byClass.set(cls, [geo]);
+      else st.byClass.set(BUCKET, [geo]);
       if (st.i % batch === 0 && performance.now() - this._sliceStart > 6)
         return true;
     }
 
-    // finalise: merge each class, attach streets, freeze transforms
+    // finalise: merge, attach streets, freeze transforms
     const meshes: (THREE.Mesh | THREE.LineSegments)[] = [];
-    for (const [cls, geos] of st.byClass) {
+    for (const geos of st.byClass.values()) {
       const merged = mergeGeometries(geos);
       if (!merged) continue;
-      const mesh = new THREE.Mesh(merged, materialFor(cls));
+      const mesh = new THREE.Mesh(merged, materialFor());
+      mesh.name = "buildings";
       mesh.receiveShadow = true;
       mesh.castShadow = true;
       st.group.add(mesh);
       meshes.push(mesh);
       geos.forEach((g) => g.dispose());
+    }
+
+    const kit = buildStreetKit(job.data.s ?? []);
+    const kitTriangles = kit ? Math.floor(kit.pos.length / 9) : 0;
+    if (kit) {
+      const mesh = new THREE.Mesh(
+        facetGeometry(kit),
+        materialFor(),
+      );
+      mesh.name = "streetkit";
+      mesh.receiveShadow = true;
+      mesh.castShadow = true;
+      st.group.add(mesh);
+      meshes.push(mesh);
+      st.kit = { props: kitTriangles };
     }
 
     const surfaces = buildSurfaces(job.key, job.data.s ?? []);
@@ -359,6 +515,7 @@ export class GeoCity {
       meshes,
       list,
       boxes: buildBroad(list),
+      enrich: st.enrich,
     });
     return false;
   }
@@ -394,21 +551,12 @@ export class GeoCity {
     return hits;
   }
 
-  facadeColor(cls: string, b: RenderBuilding, rnd: () => number): THREE.Color {
-    // Mumbai-specific palette, varied per building so a block is not one
-    // flat tone. Uses the real class + the OSM subtype.
-    const t = (b.o || "").toLowerCase();
-    let base;
-    if (cls === "industrial") base = rnd() > 0.5 ? 0x8a8175 : 0x9aa39f;
-    else if (cls === "commercial") base = rnd() > 0.5 ? 0x8f9bb0 : 0xa8b0bd;
-    else if (cls === "institutional") base = 0xc9c0ae;
-    else if (cls === "religious") base = 0xd8c7a0;
-    else if (/apartment|terrace|residential/.test(t))
-      base = rnd() > 0.5 ? 0xc9a98a : 0xbfa88f;
-    else base = rnd() > 0.5 ? 0xd6c4a4 : 0xcdb894; // residential/chawl default
-    const c = new THREE.Color(base);
-    c.multiplyScalar(0.94 + rnd() * 0.12); // subtle per-building variation
-    return c;
+  facadeColor(cls: string, b: RenderBuilding): THREE.Color {
+    // The unenriched fallback. Deterministic in the building id — it used to
+    // take a Math.random() callback, which meant the same building was a
+    // different colour on every reload and nothing visual was reproducible.
+    const k = 0.96 + hash01(b.id + "|tone") * 0.08;
+    return new THREE.Color(tint(LEGACY_TONE[cls] ?? 0xd0be9c, k));
   }
 
   paintGeometry(geo: THREE.BufferGeometry, color: THREE.Color): void {
@@ -464,12 +612,25 @@ interface BuildJob {
     i: number;
     byClass: Map<string, THREE.BufferGeometry[]>;
     group: THREE.Group;
+    enrich?: ChunkEnrichSummary;
+    kit?: { props: number };
   };
+}
+
+/** What one chunk's enrichment contained. Read by the QA overlay. */
+export interface ChunkEnrichSummary {
+  buildings: number;
+  enriched: number;
+  fronted: number;
+  families: string[];
+  palettes: string[];
+  landmarks: string[];
 }
 
 /** A resident chunk: its meshes, and the footprint data the walker collides with. */
 interface ChunkEntry {
   group: THREE.Group;
+  enrich?: ChunkEnrichSummary;
   meshes: (THREE.Mesh | THREE.LineSegments)[];
   /** Raw footprints, retained for collision. ~13k buildings resident, trivial. */
   list: RenderBuilding[];
@@ -529,22 +690,29 @@ const FOOTPATH_W = 1.8;
 /** Strip builder: accumulate quads as flat [x,y,z,...] arrays. */
 class Strip {
   pos: number[] = [];
-  /** Push a horizontal quad from two edges. */
+  /** Optional per-quad tint. When set, `quad` writes a colour attribute. */
+  col: number[] = [];
+  /** Push a horizontal quad from two edges, optionally tinted. */
   quad(
     a: [number, number],
     b: [number, number],
     c: [number, number],
     d: [number, number],
     y: number,
+    tint?: THREE.Color,
   ) {
     const p = this.pos;
     p.push(a[0], y, a[1], b[0], y, b[1], c[0], y, c[1]);
     p.push(a[0], y, a[1], c[0], y, c[1], d[0], y, d[1]);
+    if (tint) for (let i = 0; i < 6; i++) this.col.push(tint.r, tint.g, tint.b);
   }
   geometry(): THREE.BufferGeometry | null {
     if (!this.pos.length) return null;
     const g = new THREE.BufferGeometry();
     g.setAttribute("position", new THREE.Float32BufferAttribute(this.pos, 3));
+    if (this.col.length === this.pos.length) {
+      g.setAttribute("color", new THREE.Float32BufferAttribute(this.col, 3));
+    }
     return g;
   }
 }
@@ -577,6 +745,34 @@ function ribbon(
   return { l, r };
 }
 
+/**
+ * Dress a chunk's streets: kerb paint, lamps, poles and wires, trees, bins,
+ * planters, shopfront signage, and block planting.
+ *
+ * Split from the road surfaces because it is a different thing: `buildSurfaces`
+ * draws the flat ground the street sits ON, this puts OBJECTS on it. Both are
+ * driven by the same real centrelines, so a lamp is always beside the road it
+ * belongs to.
+ *
+ * Returns null for a chunk with no streets, which is most of the ocean.
+ */
+function buildStreetKit(streets: StreetFeature[]): Facet | null {
+  const out = new Facet();
+  const roads: { ax: number; az: number; bx: number; bz: number; hw: number }[] = [];
+  for (const st of streets) {
+    const cls = (st.c ?? 1) as number;
+    const hw = ROAD_HALF_WIDTH[cls] ?? ROAD_HALF_WIDTH[1];
+    for (const path of st.p) {
+      if (!path || path.length < 2) continue;
+      for (let i = 0; i < path.length - 1; i++) {
+        roads.push({ ax: path[i][0], az: path[i][1], bx: path[i + 1][0], bz: path[i + 1][1], hw });
+      }
+      dressStreet(out, path as [number, number][], { halfWidth: hw, arterial: cls >= 5, cls });
+    }
+  }
+  return out.empty ? null : out;
+}
+
 function buildSurfaces(
   key: string,
   streets: StreetFeature[],
@@ -605,7 +801,7 @@ function buildSurfaces(
       if (!w) continue;
       for (let i = 0; i < w.l.length - 1; i++) {
         // carriageway
-        road.quad(w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.08);
+        roadQuad(road, w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.08);
         // kerb faces, raised, either side
         const o = (v: [number, number], out: number): [number, number] => {
           const dx = v[0] - path[i][0];
@@ -635,13 +831,23 @@ function buildSurfaces(
     }
   }
 
-  const add = (s: Strip, color: number, order: number) => {
+  const add = (s: Strip, color: number, order: number, name: string) => {
     const g = s.geometry();
     if (!g) return;
+    // when the strip carries a colour attribute, the vertex colours ARE the
+    // tone and `color` becomes white
+    const perVertex = !!g.getAttribute("color");
     const m = new THREE.Mesh(
       g,
-      flat({ color, toneMapped: false, side: THREE.DoubleSide }),
+      flat({
+        color: perVertex ? 0xffffff : color,
+        toneMapped: false,
+        side: THREE.DoubleSide,
+        vertexColors: perVertex,
+        cache: false,
+      }),
     );
+    m.name = name;
     m.receiveShadow = true;
     m.renderOrder = order;
     group.add(m);
@@ -649,10 +855,10 @@ function buildSurfaces(
   // Heights match src/geo/water.ts: ground 0, sea 0.05, road 0.08, marks 0.09.
   // The road stack used to start at 0.01 and sat UNDER the sea ribbons, which
   // drew causeways and the Sea Link beneath the water they cross.
-  add(road, 0x54535a, -1);
-  add(kerb, 0xcfcabb, 0);
-  add(foot, 0xb9b3a4, 0);
-  add(marks, 0xe8dfc0, 0);
+  add(road, 0x54535a, -1, "road");
+  add(kerb, 0xcfcabb, 0, "kerb");
+  add(foot, 0xb9b3a4, 0, "footpath");
+  add(marks, 0xe8dfc0, 0, "markings");
 
   return group.children.length ? group : null;
 }

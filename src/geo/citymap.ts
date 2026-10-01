@@ -19,7 +19,7 @@
  */
 
 import { PAL } from "../engine/palette.js";
-import { METRO_BOUNDS, toLocal } from "./geo-constants.js";
+import { METRO_BOUNDS, ACTIVE_BOUNDS, toLocal } from "./geo-constants.js";
 import { PLACES, MAJOR_PLACES } from "./places.js";
 import { projectorFor } from "./citymap-math.js";
 import { landRuns } from "./citymap-math.js";
@@ -139,9 +139,44 @@ export function renderCityMap(
     if (opts.labels) labelRoads(g, data, p);
   }
 
+  // The metro is fully mapped; only ACTIVE_BOUNDS is built. Wash out what is
+  // deferred so it reads as "later" rather than "missing", and draw the edge.
+  // Placed before the pins, so place markers in the deferred area stay visible
+  // and still clickable.
+  greyDeferred(g, p, cv.width, cv.height);
+
   placeDots(g, p, cv.width, cv.height, false);
   cache.set(key, cv);
   return cv;
+}
+
+const A = ACTIVE_BOUNDS;
+
+/** Wash everything outside the build scope, and outline the scope's edge. */
+function greyDeferred(
+  g: CanvasRenderingContext2D,
+  p: Project,
+  w: number,
+  h: number,
+): void {
+  const left = Math.max(0, p.x(A.x0));
+  const right = Math.min(w, p.x(A.x1));
+  const top = Math.max(0, p.y(A.y1));
+  const bottom = Math.min(h, p.y(A.y0));
+  if (right <= left || bottom <= top) return;
+
+  g.fillStyle = "rgba(236,232,222,0.66)";
+  g.fillRect(0, 0, w, top);
+  g.fillRect(0, bottom, w, h - bottom);
+  g.fillRect(0, top, left, bottom - top);
+  g.fillRect(right, top, w - right, bottom - top);
+
+  g.save();
+  g.setLineDash([6, 4]);
+  g.lineWidth = 1.5;
+  g.strokeStyle = "rgba(120,96,72,0.85)";
+  g.strokeRect(left + 0.5, top + 0.5, right - left - 1, bottom - top - 1);
+  g.restore();
 }
 
 function labelRoads(

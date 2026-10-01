@@ -53,6 +53,7 @@ export function buildSky(scene, radius = 500) {
   const dome = new THREE.Mesh(geo, mat);
   dome.frustumCulled = false;
   dome.renderOrder = -10;
+  dome.name = "skydome";
   scene.add(dome);
 
   // --- flat clouds: two rings of billboarded puffs, no depth writes ---
@@ -84,6 +85,7 @@ export function buildSky(scene, radius = 500) {
     clouds.add(g);
   }
   clouds.frustumCulled = false;
+  clouds.name = "skyclouds";
   scene.add(clouds);
 
   return { dome, clouds };
@@ -102,6 +104,7 @@ export function buildDistantHills(scene) {
     { z: -250, h: 34, color: PAL.hill, width: 760, bumps: 7, y: -4 },
   ];
 
+  group.name = "hills";
   for (const L of layers) {
     const pts = [];
     const n = 90;

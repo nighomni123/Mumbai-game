@@ -46,6 +46,17 @@ export interface CityHandle {
    * mirrored-Z bug that shipped once already was invisible to tsc and build.
    */
   inspect(): unknown;
+  /**
+   * Dev-only. Per-layer screen ownership, read from the renderer's own geometry
+   * rather than inferred from pixel colour. See `attributeSurface` below.
+   */
+  attributeSurface?: (cols?: number, rows?: number) => {
+    cols: number;
+    rows: number;
+    masks: Record<string, number[]>;
+    claimed: number[];
+    colour: number[];
+  };
 }
 
 export function mountCity(container: HTMLElement): CityHandle {
@@ -74,7 +85,16 @@ export function mountCity(container: HTMLElement): CityHandle {
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(PAL.skyHaze);
-  scene.fog = new THREE.Fog(PAL.fog, 600, 3600);
+  // DEV-ONLY GRADE PROBE — ?nograde=1 removes the fog and the fog-coloured
+  // ambient so the palette can be measured without the grade on top of it.
+  //
+  // This exists because the whole palette-v2 experiment is conditional on one
+  // question: `PAL.fog` (0xf0dcb4, chroma 76) is BOTH the fog colour AND the
+  // ambient light colour at 0.28. If the grade is compressing everything toward
+  // cream, no palette change will ever be visible and the experiment would be
+  // misread as "the palette was fine". Struck out of the build by `import.meta.env.DEV`.
+  const NOGRADE = import.meta.env.DEV && new URLSearchParams(location.search).has("nograde");
+  scene.fog = NOGRADE ? new THREE.Fog(PAL.fog, 1e7, 2e7) : new THREE.Fog(PAL.fog, 600, 3600);
   buildSky(scene, 3200);
   buildDistantHills(scene);
 
@@ -96,7 +116,7 @@ export function mountCity(container: HTMLElement): CityHandle {
   sun.shadow.normalBias = 0.4;
   scene.add(sun, sun.target);
   scene.add(new THREE.HemisphereLight(PAL.skyHaze, PAL.shadowFill, 0.75));
-  scene.add(new THREE.AmbientLight(PAL.fog, 0.28));
+  scene.add(new THREE.AmbientLight(PAL.fog, NOGRADE ? 0.02 : 0.28));
 
   const camera = new THREE.PerspectiveCamera(55, 1, 1, 9000);
   camera.position.set(0, EYE_HINT, 0);
@@ -120,7 +140,36 @@ export function mountCity(container: HTMLElement): CityHandle {
   void loadWater(LAND_MASK_PATH).then((w) => {
     if (!w) return;
     water = w;
-    waterGroup = buildWater(w);
+    // A builder that throws must NOT let the scene continue without it.
+    //
+    // On 2026-09-30 a ground subdivision allocated 83M floats and exhausted the
+    // heap, surfacing as a `RangeError: Invalid array length` at 53M entries.
+    // buildWater threw, this promise handler returned, `waterGroup` stayed null,
+    // and the world carried on rendering — buildings and streets over bare
+    // `scene.background`, which looked exactly like a finished render and
+    // contaminated every visual measurement taken that day.
+    //
+    // So: loud, and counted. `waterAttached` is a QA invariant, not a claim.
+    let built: THREE.Group;
+    try {
+      built = buildWater(w);
+    } catch (err) {
+      const e = err as Error;
+      console.error(`[geo] buildWater FAILED: ${e.message}\n${e.stack}`);
+      game.waterAttached = false;
+      return;
+    }
+    const verts = built.children.reduce(
+      (n, c) => n + ((c as THREE.Mesh).geometry?.attributes?.position?.count || 0),
+      0,
+    );
+    if (!built.children.length || verts <= 0) {
+      console.error("[geo] buildWater produced no geometry — the ground is missing");
+      game.waterAttached = false;
+      return;
+    }
+    waterGroup = built;
+    game.waterAttached = true;
     scene.add(waterGroup);
     walker.setSea(new LandMask(w));
     game.landKm2 = w.areaKm2;
@@ -159,7 +208,15 @@ export function mountCity(container: HTMLElement): CityHandle {
   // --- input --------------------------------------------------------------
   const detachWalker = walker.attach();
   game.start = () => {
-    canvas.requestPointerLock();
+    // Walking does not need pointer lock — the lock only gates mouse-look.
+    // Gating `playing` on the lock meant a refused/rejected lock left the entry
+    // card up forever with no way to start; preview.ts already did it this way.
+    game.playing = true;
+    try {
+      canvas.requestPointerLock?.()?.catch?.(() => {});
+    } catch {
+      /* no lock: drag-look still works, walking is already live */
+    }
   };
 
   /** P: the whole city, flat, on top of the world. */
@@ -268,7 +325,7 @@ export function mountCity(container: HTMLElement): CityHandle {
       // streaming, no sun chase, no build queue. Pressing P costs nothing.
       mapOverlay?.tick();
     } else {
-      scene.fog = new THREE.Fog(PAL.fog, 600, 3600);
+      scene.fog = NOGRADE ? new THREE.Fog(PAL.fog, 1e7, 2e7) : new THREE.Fog(PAL.fog, 600, 3600);
       sun.castShadow = true;
       walker.update(dt);
       const cx = game.x;
@@ -313,6 +370,7 @@ export function mountCity(container: HTMLElement): CityHandle {
     game.chunks = city.loadedChunks;
     game.renderDistance = city.renderDistance;
     game.pending = city.pendingBuilds;
+    game.enrich = city.enrichment;
     game.calls = ri.calls;
     game.triangles = ri.triangles;
     game.ready = true;
@@ -320,6 +378,137 @@ export function mountCity(container: HTMLElement): CityHandle {
     renderer.render(scene, camera);
   }
   tick();
+
+  /**
+   * SURFACE ATTRIBUTION — dev only, and the reason for it.
+   *
+   * `measure-scene.mjs` classifies pixels by COLOUR, which cannot tell sea from
+   * land from sky. That is not a hypothetical: the first version of
+   * `check-visual.mjs` used layer coverage and PASSED on frames where the ground
+   * was culled, because the sea showing through classified as `building`. So the
+   * question "which layer owns the 41.5% dominant colour mass?" cannot be
+   * answered from the image alone.
+   *
+   * This asks the renderer instead. For each layer in turn, hide everything else,
+   * render, and read the framebuffer back. The layer that drew a pixel is the
+   * layer that owns it — exact, not inferred.
+   *
+   * A real GPU id pass (MRT plus a per-material write) would be the textbook
+   * answer and is the wrong call: it needs a second render target, a shader
+   * change on every material, and readback plumbing through the post chain. This
+   * needs none of that.
+   *
+   * Semantics: a shadow cast onto the road is attributed to `road`, because the
+   * road is the surface that owns that pixel. That is what "who owns the area"
+   * means. Pixels no mesh claims are `background` — the renderer's clear colour.
+   */
+  function attributeSurface(cols = 320, rows = 200) {
+    const named: THREE.Mesh[] = [];
+    scene.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (m.isMesh && typeof m.name === "string" && m.name) named.push(m);
+    });
+    // de-duplicate, first name wins
+    const byName = new Map<string, THREE.Mesh>();
+    for (const m of named) if (!byName.has(m.name)) byName.set(m.name, m);
+    // ORDER MATTERS, and this was the first bug in this method. The sky dome is a
+    // BackSide sphere that covers the whole background, so if it is tested first
+    // it claims every sky pixel and, because a claimed pixel is never re-tested,
+    // the buildings and ground behind... no — IN FRONT of it — were being denied
+    // their own pixels. It reported skydome 56% and every other layer 0%.
+    //
+    // The fix is to resolve nearest-surface-wins, which for this scene is simply
+    // "city surfaces before the backdrop": buildings/street/road/foot first, then
+    // hills, then sky, then the clear colour last. That is physical — the sky is
+    // the farthest thing there is — and it makes the result independent of the
+    // scene's insertion order.
+    const ORDER = [
+      "buildings", "streetkit", "road", "kerb", "footpath", "markings", "land", "sea",
+      "hills", "skyclouds", "skydome",
+    ];
+    const rank = (n: string) => {
+      const i = ORDER.indexOf(n);
+      return i === -1 ? ORDER.length : i; // anything unknown goes just before backdrop
+    };
+    const layers = [...byName.entries()]
+      .map(([name, m]) => ({ name, m }))
+      .sort((a, b) => rank(a.name) - rank(b.name));
+
+    const prevSize = new THREE.Vector2();
+    renderer.getSize(prevSize);
+    renderer.setSize(cols, rows, false);
+    const gl = renderer.getContext();
+    const buf = new Uint8Array(cols * rows * 4);
+    const masks: Record<string, number[]> = {};
+    const claimed = new Uint8Array(cols * rows);
+
+    // WHY A CLEAR COLOUR PER LAYER, and not alpha. The first version of this
+    // method tested `alpha > 0` to mean "this layer drew here", and it reported
+    // buildings claiming 100% of the frame. The renderer's clear alpha is 1, not
+    // 0 — so alpha is > 0 everywhere, the first layer in the order claimed the
+    // whole buffer, and every later layer was denied. A test that cannot
+    // distinguish "drawn" from "untouched" is not a test.
+    //
+    // So: clear to a colour nothing in this palette uses, render the layer, and
+    // treat "still that colour" as untouched. The colour is derived from the layer
+    // index so two layers can never collide.
+    const prevClear = new THREE.Color();
+    const prevAlpha = renderer.getClearAlpha();
+    if (scene.background instanceof THREE.Color) prevClear.copy(scene.background);
+    const bgHex = prevClear.getHex();
+    const marker = (i: number) => (((i + 1) * 97) & 0xff); // 0..255, never equals a real tone here
+
+    // The scene has an opaque `background`, which paints over the clear colour and
+    // made every pixel look "drawn" in every pass. Null it for the duration so the
+    // per-layer clear colour is what actually shows through.
+    const prevBackground = scene.background;
+    scene.background = null;
+
+    const wasVisible = layers.map((l) => l.m.visible);
+    for (const l of layers) l.m.visible = false;
+    for (let li = 0; li < layers.length; li++) {
+      const l = layers[li];
+      l.m.visible = true;
+      const mk = marker(li);
+      renderer.setClearColor(new THREE.Color((mk << 16) | (mk << 8) | mk), 1);
+      renderer.render(scene, camera);
+      gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      const own: number[] = [];
+      for (let i = 0; i < cols * rows; i++) {
+        if (claimed[i]) continue;
+        const r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
+        // untouched = the exact clear colour (allow 1 for rounding)
+        if (!(Math.abs(r - mk) <= 1 && Math.abs(g - mk) <= 1 && Math.abs(b - mk) <= 1)) {
+          claimed[i] = 1;
+          own.push(i);
+        }
+      }
+      masks[l.name] = own;
+      l.m.visible = false;
+    }
+    void bgHex;
+    for (let i = 0; i < layers.length; i++) layers[i].m.visible = wasVisible[i];
+
+    scene.background = prevBackground;
+
+    // the colour of the same frame, sampled at the same resolution, so the two
+    // grids are index-aligned and can be compared cell by cell
+    renderer.setClearColor(prevClear, prevAlpha);
+    renderer.setSize(cols, rows, false);
+    renderer.render(scene, camera);
+    const colour = new Uint8Array(cols * rows * 3);
+    gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    for (let i = 0; i < cols * rows; i++) {
+      colour[i * 3] = buf[i * 4];
+      colour[i * 3 + 1] = buf[i * 4 + 1];
+      colour[i * 3 + 2] = buf[i * 4 + 2];
+    }
+
+    renderer.setSize(prevSize.x, prevSize.y, false);
+    renderer.render(scene, camera);
+
+    return { cols, rows, masks, claimed: [...claimed], colour: [...colour] };
+  }
 
   const handle: CityHandle = {
     teleport(x, z, heading = Math.PI) {
@@ -331,6 +520,7 @@ export function mountCity(container: HTMLElement): CityHandle {
       overlay.setMap(game.map);
       setMapOverlay(overlay);
     },
+    attributeSurface,
     inspect() {
       const mesh = (o: THREE.Object3D) => {
         const m = o as THREE.Mesh;

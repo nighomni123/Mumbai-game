@@ -6,7 +6,15 @@ import {
   type CityMap,
 } from "@/geo/citymap";
 import { loadWater, LAND_MASK_PATH } from "@/geo/water";
-import { toLocal } from "@/geo/geo-constants";
+import { ACTIVE_BOUNDS, toLocal } from "@/geo/geo-constants";
+
+/** Shortest side of the build scope, in km — what the dashed box spans. */
+const SCOPE_KM = Math.round(
+  Math.min(
+    ACTIVE_BOUNDS.x1 - ACTIVE_BOUNDS.x0,
+    ACTIVE_BOUNDS.y1 - ACTIVE_BOUNDS.y0,
+  ) / 1000,
+);
 import { PLACES } from "@/geo/places";
 import { game } from "@/geo/bridge";
 
@@ -142,6 +150,11 @@ export default function MapPage() {
             ? `${map.water.areaKm2.toLocaleString()} km² of land`
             : ""}{" "}
           · {PLACES.length} places · {SITE_COUNT} validated sites
+          <span className="opacity-70">
+            {" "}
+            · dashed box = the {SCOPE_KM} km mainland being built; the rest is
+            for when it is done
+          </span>
         </p>
         <a
           href="/dashboard"

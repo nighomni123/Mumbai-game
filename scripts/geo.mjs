@@ -79,6 +79,36 @@ export const TILE_M = 2000;
 export const METRO_BOUNDS = { x0: -14730, x1: 52394, y0: -33504, y1: 48198 };
 
 /**
+ * The area we are actually building the mainland in, in local metres.
+ *
+ * A strict subset of METRO_BOUNDS: the ingested data keeps the whole metro (the
+ * map shows all of it), but the city is only built inside this box. Decided
+ * 2026-09-30 — out of scope for now, to be built when the mainland is done:
+ *
+ *   east of  19d12'27.8"N 72d59'36.5"E   lon 72.9934722 -> x 12,148
+ *   north of              19.315608       lat 19.315608  -> y 26,673
+ *   south of 18d53'26.7"N 72d48'42.6"E   lat 18.8907500 -> y -20,622
+ *
+ * So: the eastern mainland and Navi Mumbai (40 km off x1), the far north past
+ * Panvel (21.5 km off y1), and the Konkan/Alibag hills south of the city.
+ * The west edge stays at METRO_BOUNDS.x0 — nothing is cut there.
+ *
+ * MUST equal src/geo/geo-constants.ts ACTIVE_BOUNDS, like METRO_BOUNDS does.
+ */
+export const ACTIVE_BOUNDS = { x0: -14730, x1: 12148, y0: -20622, y1: 26673 };
+
+/** @returns {boolean} whether a local-metre point is inside the build scope. */
+export function inActive(x, y) {
+  const b = ACTIVE_BOUNDS;
+  return x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1;
+}
+
+/** @returns {boolean} whether a tile (gx,gy) touches the build scope at all. */
+export function tileInActive(gx, gy) {
+  return inActive(gx * TILE_M, gy * TILE_M) || inActive(gx * TILE_M, (gy + 1) * TILE_M);
+}
+
+/**
  * @typedef {{ gx: number, gy: number }} TileId
  */
 

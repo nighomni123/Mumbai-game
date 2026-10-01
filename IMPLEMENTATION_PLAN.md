@@ -12,10 +12,33 @@ Decisions taken 2026-09-30, which this plan does not re-open:
   Geography, buildings, roads and distances stay real; walking time, travel
   time and level of detail do not. The planet view is a second representation
   of the same real data, never a replacement world.
+- **The mainland is the build scope.** `ACTIVE_BOUNDS` is 27 × 47 km — west of
+  72.9934722, south of 19.315608, north of 18.8907500. The whole metro is still
+  ingested and still drawn on the map, washed and dashed as deferred; the city
+  is only built inside the box. Decided 2026-09-30, "for when the mainland is
+  complete". `check:active-bounds` holds both copies in sync.
 
 ---
 
 ## Now — the walkable, whole-city loop
+
+### Reference findings, 2026-09-30
+
+`docs/reference-walkthrough.md` has the full walkthrough, the screenshots and the
+measurements. Three findings changed this plan:
+
+- **Ours has three hues and no accents.** Measured: our street frames carry
+  1.9k–2.4k distinct colours across 3 real hue families, with `mixed` and
+  `magenta` at literally 0%. The reference carries 8k–13k across 9. The gap is
+  the entire 0–4 m band, not the geometry.
+- **The reference is not a slacker than we recorded.** It already has
+  neighbourhood kind vectors (`society/chawl/basti/tower/maidan`), rooftop
+  tanks and tarpaulins, and a live place-name readout. "Neighbourhood style
+  vectors" moves from deferred to Tier 2.
+- **It finds life by scanning its own geometry.** `flush()` rasterises every
+  triangle into a roof-height and canopy grid, then derives crow perches, shade
+  spots and gardens from it. We have real footprints and could do the same
+  thing; it is listed below.
 
 ### Landed 2026-09-30
 
@@ -51,6 +74,38 @@ Decisions taken 2026-09-30, which this plan does not re-open:
       floor at y = 0. The single `ponytail:` in `walker.ts` names this.
 - [ ] **Crossings** at junctions (kerbs and footpaths are in; zebras are not).
 
+### What a street has to look like — Tier 1
+
+Measured against the reference; this is the whole difference between a model
+and a place. Full rationale and frames in `docs/reference-walkthrough.md`.
+
+- [ ] **Facade banding and an accent palette.** 3–4 bands per building class
+      (plinth / body / cornice / parapet) and one class carrying a saturated
+      accent. Target ≥8 hue families and ≥6k distinct colours in a street frame;
+      today we measure 1.9k across 3. `enrich-chunks.mjs` already classifies
+      facades — this is where that stops being an unused field.
+- [ ] **The 0–4 m band.** Black-and-yellow kerb paint, footpath/road
+      separation, streetlamps with a flat light-pool disc, electric poles with
+      catenary wires, string lights over the narrow streets. No new data needed.
+- [ ] **A cel-painted sky.** Banded cloud lobes with hard edges and a low sun.
+      It is most of the screen in every street frame and we have none.
+- [ ] **Signage on the street.** Devanagari + Latin shop and society boards on
+      street-facing ground floors. `places.ts` and the existing sign renderer
+      are already there.
+
+### Life
+
+- [ ] **Neighbourhood kind vectors** — `society | old | chawl | basti | tower |
+      maidan` from a position field, driving a block-front typology. Moved up
+      from deferred: the reference has this and we do not.
+- [ ] **Scan the built geometry for life.** Rasterise roof heights and canopy
+      per near ring, then derive crow perches, shade spots and parapet seats —
+      the reference's best idea, and we have the roofs to do it with.
+- [ ] **Time of day as one float** driving sun, hemisphere, sky, water, shadow
+      tint and the ink colour. `T` cycles, `K` toggles rain.
+- [ ] **Rooftops**: water tanks, dish antennas, drying laundry, tarpaulins.
+      Tanks and tarps exist in the reference; dishes and laundry do not.
+
 ### Performance
 
 - [x] **Render distance is capped** and follows altitude: 2.6 km on foot, 6 km
@@ -63,6 +118,13 @@ Decisions taken 2026-09-30, which this plan does not re-open:
 - [ ] Adaptive frame-time guard (shed far detail -> distant shadows -> resolution).
 - [ ] Fix the `GL_INVALID_OPERATION: Vertex buffer is not big enough` error.
       It was still reported on the station world, not the real city.
+
+### Reference to beat, not copy
+
+Its foliage is the weakest thing in it — gulmohar canopies are overlapping flat
+lozenges and bushes are faceted icospheres. So are blank NPC faces, vehicles
+that go flat black when backlit, blank building flanks, an empty maidan, and
+depth-sort artefacts. Do not inherit any of those.
 
 ### Data hygiene
 

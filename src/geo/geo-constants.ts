@@ -22,6 +22,41 @@ export const TILE_M = 2000;
 /** Metro bounds in local metres — must equal scripts/geo.mjs METRO_BOUNDS. */
 export const METRO_BOUNDS = { x0: -14730, x1: 52394, y0: -33504, y1: 48198 };
 
+/**
+ * The area the city is built in — must equal scripts/geo.mjs ACTIVE_BOUNDS.
+ *
+ * A strict subset of METRO_BOUNDS. All of the metro is still ingested and the
+ * map still draws it, but only this box is built and streamed. Decided
+ * 2026-09-30; out of scope for now, for when the mainland is complete:
+ *
+ *   east of  19d12'27.8"N 72d59'36.5"E  (lon 72.9934722 -> x 12,148)
+ *   north of              19.315608      (lat 19.315608  -> y 26,673)
+ *   south of 18d53'26.7"N 72d48'42.6"E  (lat 18.8907500 -> y -20,622)
+ *
+ * That drops the eastern mainland and Navi Mumbai, the far north past Panvel,
+ * and the Konkan hills south of the city. The west edge is METRO_BOUNDS.x0 —
+ * nothing is cut there.
+ */
+export const ACTIVE_BOUNDS = { x0: -14730, x1: 12148, y0: -20622, y1: 26673 };
+
+/** Whether a local-metre point is inside the build scope. */
+export function inActive(x: number, y: number): boolean {
+  return (
+    x >= ACTIVE_BOUNDS.x0 &&
+    x <= ACTIVE_BOUNDS.x1 &&
+    y >= ACTIVE_BOUNDS.y0 &&
+    y <= ACTIVE_BOUNDS.y1
+  );
+}
+
+/** Whether a tile (gx,gy) touches the build scope at all. */
+export function tileInActive(gx: number, gy: number): boolean {
+  return (
+    inActive(gx * TILE_M, gy * TILE_M) ||
+    inActive(gx * TILE_M, (gy + 1) * TILE_M)
+  );
+}
+
 /** @returns {{gx:number, gy:number}} the tile containing a local-metre point */
 export function tileOf(x: number, y: number) {
   return { gx: Math.floor(x / TILE_M), gy: Math.floor(y / TILE_M) };

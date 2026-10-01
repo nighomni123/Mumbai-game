@@ -145,13 +145,15 @@ export function flat(opts = {}) {
     fog = true,
     cache = true,
     toneMapped = true,
+    vertexColors = false,
   } = opts;
   const key = cache && !map
-    ? [color, transparent, opacity, side, alphaTest, depthWrite, fog, toneMapped].join('|')
+    ? [color, transparent, opacity, side, alphaTest, depthWrite, fog, toneMapped, vertexColors].join('|')
     : null;
   if (key && flatCache.has(key)) return flatCache.get(key);
   const mat = new THREE.MeshBasicMaterial({
     color, map, transparent, opacity, side, alphaTest, fog, toneMapped,
+    vertexColors,
   });
   if (depthWrite !== null) mat.depthWrite = depthWrite;
   if (key) flatCache.set(key, mat);

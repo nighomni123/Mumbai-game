@@ -68,10 +68,39 @@ export const game = {
   /** Buildings tested against the walker this frame — the collision cost. */
   near: 0,
 
+  /**
+   * What the enrichment pipeline is actually doing in view, for the QA
+   * overlay. A pipeline whose failure mode is "buildings quietly fall back to
+   * the default family" needs a panel that says so out loud.
+   */
+  enrich: {
+    buildings: 0,
+    enriched: 0,
+    fronted: 0,
+    families: [] as string[],
+    palettes: [] as string[],
+    landmarks: [] as string[],
+  } as {
+    buildings: number;
+    enriched: number;
+    fronted: number;
+    families: string[];
+    palettes: string[];
+    landmarks: string[];
+  },
+
   /** World view vs planet view (the P key). */
   mode: "world" as WorldMode,
   /** Km² of land in the world, read off the mask for the HUD. */
   landKm2: 0,
+  /**
+   * Did the ground/sea actually get built and added to the scene?
+   *
+   * QA invariant. A builder that throws leaves the world rendering happily over
+   * bare background, which reads as a finished frame and silently corrupts every
+   * visual measurement. `null` = still loading.
+   */
+  waterAttached: null as boolean | null,
   /** Metres of geometry the renderer is currently willing to draw. */
   renderDistance: 0,
 

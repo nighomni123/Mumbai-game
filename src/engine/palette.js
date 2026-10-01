@@ -29,10 +29,20 @@ export const PAL = {
 
   // ---- ground -----------------------------------------------------------
   groundLand: 0xd8d2c2,    // unlit land base under every tile (never toon-lit)
+  // --- ground tone families -------------------------------------------
+  // Measured 2026-09-30: one flat ground plane covered ~30% of a street frame
+  // and returned the identical colour in five of six sampled columns. These are
+  // the variations it is now subdivided into. All low chroma deliberately —
+  // ground should read as ground, and the accents belong on the buildings.
+  groundPaving: 0xd2ccbc,  // worn paving / packed earth
+  groundWorn:   0xc8bda6,  // bare earth showing through
+  groundPale:   0xe0dacb,  // sun-bleached
   sea: 0x4d7f96,          // harbour + open ocean; flat, tone-mapping off
   seaDeep: 0x2f5a72,      // the one accent that reads at planet scale
   road: 0x3c3e4c,        // measured: the dominant asphalt tone
   roadLight: 0x555a6b,
+  roadPatch: 0x494c58,   // resurfaced patches — the variation that stops the
+  roadDamp: 0x353844,    // carriageway reading as one flat tone
   kerbPaint: 0xf2c33c,   // the yellow half of black-and-yellow kerbs
   kerbDark: 0x1e1c22,
   zebra: 0xf4efe2,
@@ -62,6 +72,12 @@ export const PAL = {
   // ---- vehicles ---------------------------------------------------------
   taxiBlack: 0x17161b,
   taxiYellow: 0xf0b429,
+  // A first-class vehicle white, and the hedge greens, promoted out of
+  // src/geo/street.ts's private C table (2026-09-30). The prop kit wanted both
+  // and borrowing road-marking white for a car body was a semantic hack; if a
+  // colour is needed by two systems it belongs here.
+  carWhite: 0xece7dc,
+  carSilver: 0xa8adb4,
   autoRed: 0xb8392c,
   autoYellow: 0xe8b62c,
   glassTint: 0x6b7c96,
@@ -87,6 +103,8 @@ export const PAL = {
   brick: 0xa9613f,       // exposed brick and laterite
 
   // ---- nature -----------------------------------------------------------
+  hedge: 0x4f7a44,
+  hedgeLight: 0x6a9a58,
   gulmohar: 0xd8452c,    // flame-of-the-forest blossom
   gulmoharDeep: 0xa82d1c,
   gulmoharLeaf: 0x3f6b3a,

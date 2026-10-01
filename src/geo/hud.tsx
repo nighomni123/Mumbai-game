@@ -187,7 +187,18 @@ export function CityHud() {
   const [map, setMap] = useState<CityMap | null>(null);
   const mapRef = useRef<CityMap | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [showEnrich, setShowEnrich] = useState(false);
   const [, redraw] = useState(0);
+
+  // G: the enrichment QA panel. Off by default — it is an inspection tool, not
+  // something a visitor should trip over while trying to walk to Kala Ghoda.
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.code === "KeyG") setShowEnrich((v) => !v);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const lastToast = useRef(0);
   const lastPaint = useRef(0);
 
@@ -237,6 +248,9 @@ export function CityHud() {
 
   const w = toWgs84(game.x, game.z);
   const planet = mode === "planet";
+  const e = game.enrich;
+  const enriched = e.buildings ? Math.round((e.enriched / e.buildings) * 100) : 0;
+  const fronted = e.buildings ? Math.round((e.fronted / e.buildings) * 100) : 0;
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10 font-note text-foreground">
@@ -272,6 +286,7 @@ export function CityHud() {
             {game.near > 0 && <Row k="nearby" v={`${game.near} buildings`} />}
           </>
         )}
+        {!planet && showEnrich && <EnrichPanel />}
         {!planet && (
           <button
             type="button"
@@ -282,6 +297,7 @@ export function CityHud() {
             admin power: {fly ? "on" : "off"}
           </button>
         )}
+        {!planet && <SpeedControl />}
       </Card>
 
       {!planet && !playing && game.ready && (
@@ -297,7 +313,6 @@ export function CityHud() {
               click to walk · WASD move · Shift run · Space jump · hold Z to
               burst · double-tap Space for admin power
             </div>
-        {!planet && <SpeedControl />}
             <div className="mt-1 text-sm opacity-70">
               press P for the whole city
             </div>
@@ -327,6 +342,42 @@ export function CityHud() {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * The enrichment QA panel.
+ *
+ * A classification system's worst failure is silent: every family, palette and
+ * roof id is a plain string, so a typo does not fail a build, it fails by
+ * quietly rendering the default family for every building — and the frame still
+ * looks like a city. This panel says what actually landed, next to the counts
+ * the renderer already had.
+ */
+function EnrichPanel() {
+  const e = game.enrich;
+  const pct = (n: number) =>
+    e.buildings ? `${Math.round((n / e.buildings) * 100)}%` : "0%";
+  return (
+    <div className="mt-2 border-t border-foreground/30 pt-2 text-[11px] leading-tight">
+      <div className="display mb-1 text-xs">enrichment</div>
+      <Row k="profiles" v={`${e.enriched}/${e.buildings} (${pct(e.enriched)})`} />
+      <Row k="frontages" v={`${pct(e.fronted)}`} />
+      <Row k="families" v={String(e.families.length)} />
+      <Row k="palettes" v={String(e.palettes.length)} />
+      <Row k="landmarks" v={String(e.landmarks.length)} />
+      {e.families.length > 0 && (
+        <div className="mt-1 opacity-70">{e.families.join(" · ")}</div>
+      )}
+      {e.landmarks.length > 0 && (
+        <div className="mt-1 opacity-70">◆ {e.landmarks.slice(0, 6).join(", ")}</div>
+      )}
+      {e.buildings > 0 && e.enriched === 0 && (
+        <div className="mt-1 text-foreground">
+          no profiles here — this chunk is not enriched
+        </div>
+      )}
     </div>
   );
 }
