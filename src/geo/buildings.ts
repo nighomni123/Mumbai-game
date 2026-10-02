@@ -469,7 +469,21 @@ export function mass(
     const dot = nx * 0.55 + nz * 0.83; // fixed sun azimuth
     const k = 0.72 + 0.38 * Math.max(0, dot) - 0.06;
     // side quads
-    out.quadY(a[0] + nx * 0.01, a[1] + nz * 0.01, b[0] + nx * 0.01, b[1] + nz * 0.01, y0, y0 + H, hex, k);
+    //
+    // `flip` is the load-bearing argument here, and it is invisible if you do
+    // not know what it does. Back-face culling is decided by the ORDER OF THE
+    // VERTICES, not by the normal — so `outwardNormal()` above only lights the
+    // wall correctly, it cannot make the wall visible.
+    //
+    // `quadY` splits the quad as (a0,y0 / b1,y1 / b1,y0) + (a0,y0 / b1,y1 / a0,y1).
+    // Measured over every wall edge in the metro by replaying the exact
+    // emission path and probing each triangle's geometric normal against the
+    // footprint interior: the FIRST triangle faces outward on 3 of 1,640,299
+    // edges, the second on all 1,640,299. Emitted unflipped, exactly half of
+    // every wall in the city is culled and you see through the building.
+    // `flip` reverses that first triangle — with it, 100% of wall triangles
+    // face outward.
+    out.quadY(a[0] + nx * 0.01, a[1] + nz * 0.01, b[0] + nx * 0.01, b[1] + nz * 0.01, y0, y0 + H, hex, k, true);
   }
 
   // The roof cap.
@@ -755,7 +769,9 @@ function ring(
     if (len < 0.3) continue;
     const [un, uz] = outwardNormal(r, i, sign);
     const nx = un * out, nz = uz * out;
-    f.quadY(a[0] + nx, a[1] + nz, b[0] + nx, b[1] + nz, y0, y1, hex, k);
+    // `flip` — same reason as `mass()`: unflipped, the first triangle of every
+    // ring band faces into the building and is back-face culled.
+    f.quadY(a[0] + nx, a[1] + nz, b[0] + nx, b[1] + nz, y0, y1, hex, k, true);
   }
 }
 
@@ -774,8 +790,9 @@ function band(
     const dx = b[0] - a[0], dz = b[1] - a[1];
     const len = Math.hypot(dx, dz);
     if (len < 0.3) continue;
-    const nx = (dz / len) * 0.09, nz = (-dx / len) * 0.09;
-    out.quadY(a[0] + nx, a[1] + nz, b[0] + nx, b[1] + nz, y0, y1, hex, k);
+    // Proud of the wall, not inside it — see `openings` for why.
+    const nx = (-dz / len) * 0.09, nz = (dx / len) * 0.09;
+    out.quadY(a[0] + nx, a[1] + nz, b[0] + nx, b[1] + nz, y0, y1, hex, k, true);
   }
 }
 
@@ -795,8 +812,21 @@ function openings(
 ) {
   const [ax, az, bx, bz, len] = e;
   const dx = bx - ax, dz = bz - az;
-  const nx = dz / len, nz = -dx / len;
-  const ox = nx * (win.inset + 0.05), oz = nz * (win.inset + 0.05);
+  // Windows are drawn PROUD of the wall, never recessed behind it.
+  //
+  // They used to be offset INWARD by `inset + 0.05` and emitted unflipped, so
+  // they were only ever visible THROUGH the back-face-culled half of every
+  // wall. Making the walls opaque (see `mass`) hid the entire window layer —
+  // verified A/B on one fixed frame: the unflipped build showed a full window
+  // grid, the fixed one a bare slab. Nothing was deleted; it was occluded.
+  //
+  // There is no boolean geometry here, so a true recess cannot exist. Depth is
+  // faked with colour plus a few centimetres of offset: the dark opening sits
+  // in front of the frame, and the frame in front of the wall.
+  const nx = -dz / len, nz = dx / len;      // rings are clockwise: this is OUTWARD
+  const ox = nx * 0.06, oz = nz * 0.06;    // the dark opening
+  const fx = nx * 0.02, fz = nz * 0.02;    // the frame, behind the opening
+  const sx = nx * 0.045, sz = nz * 0.045;  // the sill
 
   // how many bays fit this edge
   const per = Math.max(1, Math.floor(len / (win.w * 2.0)));
@@ -810,7 +840,7 @@ function openings(
     // the ground floor of a shopfront row is openings, not windows
     if (f === 0 && fam.groundShop > 0) {
       // a lit recess across the whole bay instead of discrete windows
-      out.quadY(ax + ox, az + oz, bx + ox, bz + oz, 0.5, Math.min(2.6, H * 0.5), 0x2f3540, 0.7);
+      out.quadY(ax + ox, az + oz, bx + ox, bz + oz, 0.5, Math.min(2.6, H * 0.5), 0x2f3540, 0.7, true);
       continue;
     }
     for (let i = 0; i < per; i++) {
@@ -821,11 +851,11 @@ function openings(
       const cx1 = cx0 + (dx / len) * wW;
       const cz1 = cz0 + (dz / len) * wW;
       // reveal (the dark recess), then the frame
-      out.quadY(cx0 + ox, cz0 + oz, cx1 + ox, cz1 + oz, base, base + wH, win.shade, strong ? 0.72 : 1.0);
+      out.quadY(cx0 + ox, cz0 + oz, cx1 + ox, cz1 + oz, base, base + wH, win.shade, strong ? 0.72 : 1.0, true);
       // Under segmentation the frame is a BRIGHT ring, not a trim-coloured one:
       // the contrast between a light frame and a dark opening is what makes a
       // window read at distance, and trim is too close to the base to do it.
-      out.quadY(cx0, cz0, cx1, cz1, base - 0.12, base + wH + 0.12, strong ? 0xe8dcc4 : tone.trim, strong ? 1.25 : 1.05);
+      out.quadY(cx0 + fx, cz0 + fz, cx1 + fx, cz1 + fz, base - 0.12, base + wH + 0.12, strong ? 0xe8dcc4 : tone.trim, strong ? 1.25 : 1.05, true);
       // The sill is PER BAY, not one run down the whole edge.
       //
       // A continuous one was the "beams on specific angles" artefact: an 0.12 m
@@ -836,9 +866,9 @@ function openings(
       // costs the same triangles.
       if (f === 0 || rnd() > 0.6) {
         out.quadY(
-          cx0 - (dx / len) * wW * 0.18, cz0 - (dz / len) * wW * 0.18,
-          cx1 + (dx / len) * wW * 0.18, cz1 + (dz / len) * wW * 0.18,
-          base - 0.16, base - 0.04, tone.trim, 1.0,
+          cx0 - (dx / len) * wW * 0.18 + sx, cz0 - (dz / len) * wW * 0.18 + sz,
+          cx1 + (dx / len) * wW * 0.18 + sx, cz1 + (dz / len) * wW * 0.18 + sz,
+          base - 0.16, base - 0.04, tone.trim, 1.0, true,
         );
       }
     }
@@ -859,7 +889,7 @@ function balcony(
   const [ax, az, bx, bz, len] = e;
   if (len < 3) return;
   const dx = (bx - ax) / len, dz = (bz - az) / len;
-  const nx = dz, nz = -dx;
+  const nx = -dz, nz = dx; // outward: a balcony projects from the wall
   const depth = bal.depth;
   const railH = 0.85;
   for (let f = 1; f < floors; f++) {

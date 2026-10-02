@@ -24,6 +24,18 @@ import * as THREE from "three";
 import { cel, flat } from "../engine/toon.js";
 import { TILE_M, tileOf, tileInActive } from "./geo-constants.js";
 import { Facet } from "./buildings.js";
+import {
+  FOOTPATH_W,
+  KERB_H,
+  NearGrid,
+  ROAD_HALF_WIDTH,
+  indexRings,
+  reachToBoundary,
+  ribbon,
+  roadCorridor,
+  pushRingOutOfCorridor,
+  smoothPath,
+} from "./roadways.js";
 import type { Profile } from "./buildings.js";
 import { emitBuilding, facetGeometry } from "./chunk-build.js";
 import { dressStreet, blockPlanting } from "./street.js";
@@ -382,6 +394,28 @@ export class GeoCity {
     const list = job.data.b ?? [];
     const batch = 24;
 
+    // Clear the footprints off the carriageway BEFORE anything reads a ring.
+    //
+    // Measured on the starter slice: 36.5% of buildings have a footprint vertex
+    // inside a road and 8.4% are more than 1.5 m into one, so buildings
+    // routinely stand in the street. It is in the source geometry, not in the
+    // width table, and the raw tiles that would let it be fixed at ingest time
+    // are deleted after enrichment — so it is corrected here.
+    //
+    // In place, before both `emitBuilding` below and `buildBroad(list)` at the
+    // end. Those two are the render geometry and the walker's collider; if only
+    // one of them saw the corrected ring you could see a building and still
+    // walk through it.
+    if (!st.roadsPushed) {
+      st.roadsPushed = true;
+      const segs = roadCorridor(job.data.s ?? []);
+      if (segs.length) {
+        for (const b of list) {
+          if (Array.isArray(b.r) && b.r.length > 2) b.r = pushRingOutOfCorridor(b.r, segs);
+        }
+      }
+    }
+
     // QA: what this chunk's enrichment actually contains. Counted here because
     // this is the one place every building in the chunk passes through.
     if (!st.enrich) {
@@ -444,7 +478,7 @@ export class GeoCity {
       st.kit = { props: kitTriangles };
     }
 
-    const surfaces = buildSurfaces(job.key, job.data.s ?? []);
+    const surfaces = buildSurfaces(job.key, job.data.s ?? [], list);
     if (surfaces) {
       st.group.add(surfaces);
       surfaces.children.forEach((c) => meshes.push(c as THREE.Mesh));
@@ -535,6 +569,8 @@ interface BuildJob {
     /** every building in this chunk appends here, across every slice */
     arena: Facet;
     group: THREE.Group;
+    /** Footprints already cleared off the carriageway for this chunk. */
+    roadsPushed?: boolean;
     enrich?: ChunkEnrichSummary;
     kit?: { props: number };
   };
@@ -606,9 +642,6 @@ function buildBroad(list: RenderBuilding[]): Float32Array {
  * format carries no true width field (`w` is a duplicate of `c`). Mumbai
  * convention used here — local lanes ~7 m kerb-to-kerb, arterials ~14 m.
  */
-const ROAD_HALF_WIDTH: Record<number, number> = { 1: 3.5, 3: 4.5, 5: 7, 6: 7 };
-const KERB_H = 0.15;
-const FOOTPATH_W = 1.8;
 
 /** Strip builder: accumulate quads as flat [x,y,z,...] arrays. */
 class Strip {
@@ -640,34 +673,6 @@ class Strip {
   }
 }
 
-/** Perpendicular offsets either side of a centreline, at the given half-width. */
-function ribbon(
-  path: [number, number][],
-  half: number,
-): { l: [number, number][]; r: [number, number][] } | null {
-  if (path.length < 2) return null;
-  const l: [number, number][] = [];
-  const r: [number, number][] = [];
-  for (let i = 0; i < path.length; i++) {
-    const p = path[i];
-    const prev = path[i - 1] ?? path[i];
-    const next = path[i + 1] ?? path[i];
-    let dx = next[0] - prev[0];
-    let dy = next[1] - prev[1];
-    const len = Math.hypot(dx, dy);
-    if (len < 1e-6) {
-      // degenerate segment (a repeated vertex): reuse the previous normal
-      const back = ribbon([[prev[0], prev[1]], p], half);
-      return back;
-    }
-    dx /= len;
-    dy /= len;
-    l.push([p[0] - dy * half, p[1] + dx * half]);
-    r.push([p[0] + dy * half, p[1] - dx * half]);
-  }
-  return { l, r };
-}
-
 /**
  * Dress a chunk's streets: kerb paint, lamps, poles and wires, trees, bins,
  * planters, shopfront signage, and block planting.
@@ -687,10 +692,13 @@ function buildStreetKit(streets: StreetFeature[]): Facet | null {
     const hw = ROAD_HALF_WIDTH[cls] ?? ROAD_HALF_WIDTH[1];
     for (const path of st.p) {
       if (!path || path.length < 2) continue;
-      for (let i = 0; i < path.length - 1; i++) {
-        roads.push({ ax: path[i][0], az: path[i][1], bx: path[i + 1][0], bz: path[i + 1][1], hw });
+      // Same smoothed centreline the carriageway is built from, so lamps and
+      // poles do not stand on a road that was then drawn somewhere else.
+      const sp = smoothPath(path as [number, number][]);
+      for (let i = 0; i < sp.length - 1; i++) {
+        roads.push({ ax: sp[i][0], az: sp[i][1], bx: sp[i + 1][0], bz: sp[i + 1][1], hw });
       }
-      dressStreet(out, path as [number, number][], { halfWidth: hw, arterial: cls >= 5, cls });
+      dressStreet(out, sp, { halfWidth: hw, arterial: cls >= 5, cls });
     }
   }
   return out.empty ? null : out;
@@ -699,6 +707,7 @@ function buildStreetKit(streets: StreetFeature[]): Facet | null {
 function buildSurfaces(
   key: string,
   streets: StreetFeature[],
+  buildings: { r: [number, number][] }[] = [],
 ): THREE.Group | null {
   const group = new THREE.Group();
   group.name = `surface_${key}`;
@@ -709,43 +718,146 @@ function buildSurfaces(
   // mask in src/geo/water.ts, which knows where the harbour is; a full-tile
   // quad cannot, and drew the Arabian Sea as land. The road stack sits above
   // it: sea 0.00, land 0.05, road 0.08, markings 0.09, kerb 0.15.
+  // Longest footpath we will draw before giving up and leaving bare land.
+  // ponytail: the march is O(steps) per corridor edge and runs inside the chunk
+  // build slice. At 26 m / 0.75 m steps it measured 653 ms PER CHUNK, which is a
+  // two-thirds-second freeze every time a chunk loads. 16 m / 1.0 m steps plus
+  // computing every second vertex (the width varies slowly along a street) is
+  // ~6x cheaper. Ceiling: the cost is linear in MAX_FOOTPATH, so if the void
+  // ever has to close further the fix is a per-chunk chamfer distance field to
+  // the nearest footprint, rasterised once in O(cells) and then an O(1) lookup
+  // per step — not a bigger loop.
+  const MAX_FOOTPATH = 16;
+  // Below this the footpath cannot get out at all — that is a junction.
+  const JUNCTION_MIN = 1.2;
+  // How far a junction pad reaches either side of a carriageway that is boxed in.
+  const JUNCTION_PAD = 9;
+
   const road = new Strip();
   const kerb = new Strip();
   const foot = new Strip();
   const marks = new Strip();
+  const apron = new Strip();
 
-  for (const st of streets) {
+  // --- the corridor ------------------------------------------------------
+  //
+  // A street is a PATH WITH BOUNDARIES, not a stripe on the ground: carriageway,
+  // kerb, then a footpath that runs until it meets something. The footpath used
+  // to be a fixed 1.8 m band, so everything past it was bare land — which is
+  // the wide pale void between the road and the buildings in every aerial.
+  //
+  // Two grids, built once per chunk, so the march below stays cheap:
+  //   - every footprint ring, by bounding box
+  //   - every street centreline segment
+  const rings = buildings.map((b) => b.r).filter((r) => r && r.length > 2);
+  const ringGrid = new NearGrid(24);
+  indexRings(rings, ringGrid);
+  const allSegs = roadCorridor(streets);
+  const segGrid = new NearGrid(24);
+  for (let i = 0; i < allSegs.length; i++) {
+    const [ax, az, bx, bz] = allSegs[i];
+    segGrid.add(ax, az, i);
+    segGrid.add(bx, bz, i);
+  }
+
+  /** How far the footpath runs out from `p` along `(dx, dz)`. */
+  const reach = (p: [number, number], dx: number, dz: number, own: number) =>
+    reachToBoundary(p[0], p[1], dx, dz, rings, ringGrid, allSegs, segGrid, MAX_FOOTPATH, own);
+
+  for (let si = 0; si < streets.length; si++) {
+    const st = streets[si];
     // `c` is road_class and may be null on some features; default to local.
     const cls = (st.c ?? 1) as number;
     const hw = ROAD_HALF_WIDTH[cls] ?? ROAD_HALF_WIDTH[1];
     const isArterial = cls >= 5;
-    for (const path of st.p) {
+    for (const raw of st.p) {
+      // ribbon() smooths, so every offset below must be measured from the SAME
+      // smoothed centreline. It used to be measured from the raw `path[i]`,
+      // which pushed kerbs and footpaths along a different vector to the
+      // carriageway they belong to.
+      const path = smoothPath(raw as [number, number][]);
       const w = ribbon(path, hw);
       if (!w) continue;
       for (let i = 0; i < w.l.length - 1; i++) {
         // carriageway
         roadQuad(road, w.l[i], w.l[i + 1], w.r[i + 1], w.r[i], 0.08);
-        // kerb faces, raised, either side
-        const o = (v: [number, number], out: number): [number, number] => {
-          const dx = v[0] - path[i][0];
-          const dy = v[1] - path[i][1];
-          const d = Math.hypot(dx, dy) || 1;
-          return [v[0] + (dx / d) * out, v[1] + (dy / d) * out];
+
+        // OUTWARD normal at each end of this edge, from the SMOOTHED line.
+        //
+        // Perpendicular to the tangent, not along it. Marching along the
+        // tangent walks down the kerb line and never leaves the road, which is
+        // what made 59% of sides run the full 26 m without finding a wall.
+        const normalAt = (j2: number): [number, number] => {
+          const a = path[Math.max(0, j2 - 1)];
+          const b = path[Math.min(path.length - 1, j2 + 1)];
+          const dx = b[0] - a[0];
+          const dz = b[1] - a[1];
+          const L = Math.hypot(dx, dz) || 1;
+          return [-dz / L, dx / L];
         };
-        const l0 = o(w.l[i], 0.001);
-        const l1 = o(w.l[i + 1], 0.001);
-        const r0 = o(w.r[i], 0.001);
-        const r1 = o(w.r[i + 1], 0.001);
-        kerb.quad(w.l[i], l0, l1, w.l[i + 1], KERB_H);
-        kerb.quad(r1, r0, w.r[i], w.r[i + 1], KERB_H);
-        // footpath bands outside the kerb
-        const fo = FOOTPATH_W;
-        const L0 = o(w.l[i], fo);
-        const L1 = o(w.l[i + 1], fo);
-        const R0 = o(w.r[i], fo);
-        const R1 = o(w.r[i + 1], fo);
-        foot.quad(l0, L0, L1, l1, KERB_H);
-        foot.quad(R1, R0, r0, r1, KERB_H);
+        const dL0 = normalAt(i), dL1 = normalAt(i + 1);
+        const dR0: [number, number] = [-dL0[0], -dL0[1]];
+        const dR1: [number, number] = [-dL1[0], -dL1[1]];
+
+        // How far each side's footpath runs before it meets a wall or a road.
+        // Every second vertex only — see MAX_FOOTPATH — then interpolated, so
+        // the band still tapers but the march cost is halved.
+        const ev = (l: number) => {
+          const n = normalAt(l);
+          return reach(w.l[l], n[0], n[1], si);
+        };
+        const rv = (l: number) => {
+          const n = normalAt(l);
+          return reach(w.r[l], -n[0], -n[1], si);
+        };
+        const lerp = (f: (l: number) => number) =>
+          i % 2 === 0
+            ? [f(i), f(i + 1)]
+            : [(f(i - 1) + f(i)) / 2, (f(i) + f(i + 1)) / 2];
+        const [rl0, rl1] = lerp(ev);
+        const [rr0, rr1] = lerp(rv);
+
+        // A junction is where the footpath could not get out at all. Dropping
+        // the kerb there is what stops kerbs and footpath bands being drawn
+        // straight across the crossing carriageway, which was most of the
+        // "convoluted mess" where more than one road met.
+        const openL = Math.max(rl0, rl1) > JUNCTION_MIN;
+        const openR = Math.max(rr0, rr1) > JUNCTION_MIN;
+
+        const off = (
+          v: [number, number],
+          base: [number, number],
+          d: [number, number],
+          out: number,
+        ): [number, number] => [v[0] + d[0] * out, v[1] + d[1] * out];
+
+        if (openL || openR) {
+          const l0 = off(w.l[i], path[i], dL0, 0.001);
+          const l1 = off(w.l[i + 1], path[i + 1], dL1, 0.001);
+          const r0 = off(w.r[i], path[i], dR0, 0.001);
+          const r1 = off(w.r[i + 1], path[i + 1], dR1, 0.001);
+          if (openL) kerb.quad(w.l[i], l0, l1, w.l[i + 1], KERB_H);
+          if (openR) kerb.quad(r1, r0, w.r[i + 1], w.r[i], KERB_H);
+
+          const L0 = off(w.l[i], path[i], dL0, FOOTPATH_W + rl0);
+          const L1 = off(w.l[i + 1], path[i + 1], dL1, FOOTPATH_W + rl1);
+          const R0 = off(w.r[i], path[i], dR0, FOOTPATH_W + rr0);
+          const R1 = off(w.r[i + 1], path[i + 1], dR1, FOOTPATH_W + rr1);
+          if (openL) foot.quad(l0, L0, L1, l1, KERB_H);
+          if (openR) foot.quad(r1, R0, r0, r1, KERB_H);
+        } else {
+          // Fully enclosed: this is the junction mouth. Fill it at road level so
+          // the carriageways read as one open intersection instead of several
+          // ribbons laid over each other with bare land showing between them.
+          const J = JUNCTION_PAD;
+          const L0 = off(w.l[i], path[i], dL0, J);
+          const L1 = off(w.l[i + 1], path[i + 1], dL1, J);
+          const R0 = off(w.r[i], path[i], dR0, J);
+          const R1 = off(w.r[i + 1], path[i + 1], dR1, J);
+          apron.quad(L0, w.l[i], w.l[i + 1], L1, 0.085);
+          apron.quad(w.r[i], R0, R1, w.r[i + 1], 0.085);
+        }
+
         // centre line on arterials only
         if (isArterial) {
           marks.quad(path[i], path[i + 1], path[i + 1], path[i], 0.09);
@@ -781,6 +893,7 @@ function buildSurfaces(
   add(road, 0x54535a, -1, "road");
   add(kerb, 0xcfcabb, 0, "kerb");
   add(foot, 0xb9b3a4, 0, "footpath");
+  add(apron, 0x54535a, -1, "junction");
   add(marks, 0xe8dfc0, 0, "markings");
 
   return group.children.length ? group : null;
