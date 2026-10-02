@@ -35,6 +35,7 @@ import { MapOverlay } from "./map-overlay.js";
 import {
   game,
   toast,
+  isTyping,
   RENDER_MIN,
   RENDER_MAX,
   type WorldMode,
@@ -321,6 +322,9 @@ export function mountCity(container: HTMLElement): CityHandle {
   }
 
   const onKey = (e: KeyboardEvent) => {
+    // A focused text field owns its keys — typing "powai" used to open the
+    // planet overlay mid-word and unmount the palette under the cursor.
+    if (isTyping()) return;
     if (e.code === "Escape" && game.mode === "planet") {
       setMapOverlay(null);
       return;
@@ -710,6 +714,13 @@ export function mountCity(container: HTMLElement): CityHandle {
       canvas.remove();
     },
   };
+
+  // A destination handed over by /map's "travel to X": that page cannot travel
+  // itself (goTo only exists once this world is mounted), so the intent rides
+  // in the URL and its owner consumes it here. Deliberately left in the URL —
+  // reloading then re-arrives where the link says.
+  const to = new URLSearchParams(window.location.search).get("to");
+  if (to) game.goTo?.(to);
 
   // Dev-only: the live harness reads the same bridge the HUD reads, and this
   // handle for anything that has to poke the world itself. Stripped from the build.

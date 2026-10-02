@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { game, SPEED_MIN, SPEED_MAX, RENDER_MIN, RENDER_MAX, type Toast } from "./bridge";
+import { game, isTyping, SPEED_MIN, SPEED_MAX, RENDER_MIN, RENDER_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
   renderPlayableMap,
@@ -75,10 +75,7 @@ function SearchBar() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing =
-        e.target instanceof HTMLElement &&
-        (e.target.tagName === "INPUT" || e.target.isContentEditable);
-      if (e.code === "Slash" && !typing) {
+      if (e.code === "Slash" && !isTyping()) {
         e.preventDefault();
         setOpen((v) => !v);
       }
@@ -259,6 +256,10 @@ function Minimap({ map }: { map: CityMap }) {
     setHover(name);
     if (name) game.goTo?.(name);
   };
+  // Hover only labels. Travel belongs to the click alone — binding goTo here
+  // too meant brushing the mouse across the minimap teleported the player
+  // across the city, unasked, once per place crossed.
+  const hoverAt = (e: React.MouseEvent<HTMLCanvasElement>) => setHover(at(e));
 
   return (
     <div
@@ -269,7 +270,7 @@ function Minimap({ map }: { map: CityMap }) {
         ref={ref}
         width={MM_W}
         height={MM_H}
-        onMouseMove={pick}
+        onMouseMove={hoverAt}
         onClick={pick}
         className="sketch-soft block w-full cursor-pointer"
         title="Click a place to travel there"
@@ -396,7 +397,7 @@ export function CityHud() {
   // something a visitor should trip over while trying to walk to Kala Ghoda.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.code === "KeyG") setShowEnrich((v) => !v);
+      if (ev.code === "KeyG" && !isTyping()) setShowEnrich((v) => !v);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

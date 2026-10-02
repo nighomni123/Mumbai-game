@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { Link } from "react-router";
 
 export default function NotFound() {
   return (
@@ -15,8 +16,14 @@ export default function NotFound() {
         <div className="max-w-5xl mx-auto relative px-4">
           <div className="flex items-center justify-center min-h-[200px]">
             <div className="text-center">
-              <h1 className="text-4xl font-bold text-gray-900 mb-4">404</h1>
-              <p className="text-lg text-gray-600">Page Not Found</p>
+              <h1 className="text-4xl font-bold text-foreground mb-4">404</h1>
+              <p className="text-lg text-muted-foreground">Page Not Found</p>
+              <Link
+                to="/"
+                className="note mt-6 inline-block cursor-pointer underline decoration-dotted underline-offset-4 hover:text-foreground"
+              >
+                back to the front page
+              </Link>
             </div>
           </div>
         </div>

@@ -86,15 +86,24 @@ function ground(g: THREE.Group) {
     strip.rotation.x = -Math.PI / 2;
     strip.position.set(0, deck + 0.002, s * (L.platformZ - 0.85));
     g.add(strip);
-    // raised dots, as one instanced mesh
+    // Raised dots, as one instanced mesh. Columns are counted from the same
+    // bounds the loop walks: the old capacity (floor(platformLength/0.35)*2 =
+    // 1028) disagreed with the inclusive loop (515 columns = 1030 instances),
+    // so count overran the instance buffer and the driver rejected every draw
+    // of this mesh — GL_INVALID_OPERATION: "Vertex buffer is not big enough
+    // for the draw call", spamming the console every frame and silently never
+    // drawing the dots. Index-based so the two can never disagree again.
+    const dotStep = 0.35;
+    const dotCols = Math.floor((L.halfX * 2) / dotStep) + 1;
     const dots = new THREE.InstancedMesh(
       new THREE.CylinderGeometry(0.07, 0.07, 0.03, 6),
       flat({ color: 0xb9973f, toneMapped: false }),
-      Math.floor(L.platformLength / 0.35) * 2,
+      dotCols * 2,
     );
     const dm = new THREE.Matrix4();
     let di = 0;
-    for (let dx = -L.halfX; dx <= L.halfX; dx += 0.35) {
+    for (let c = 0; c < dotCols; c++) {
+      const dx = -L.halfX + c * dotStep;
       for (const off of [-0.12, 0.12]) {
         dm.makeTranslation(dx, deck + 0.02, s * (L.platformZ - 0.85) + off);
         dots.setMatrixAt(di++, dm);

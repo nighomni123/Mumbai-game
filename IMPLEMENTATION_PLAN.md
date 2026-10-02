@@ -116,8 +116,9 @@ and a place. Full rationale and frames in `docs/reference-walkthrough.md`.
 - [ ] LOD tiers per chunk (near full / mid simplified / far silhouette / skip).
 - [ ] Direction-biased pre-warm of the ring ahead of travel.
 - [ ] Adaptive frame-time guard (shed far detail -> distant shadows -> resolution).
-- [ ] Fix the `GL_INVALID_OPERATION: Vertex buffer is not big enough` error.
-      It was still reported on the station world, not the real city.
+- [x] Fix the `GL_INVALID_OPERATION: Vertex buffer is not big enough` error.
+      It was the station world's tactile-dots mesh (capacity 1028, drawn
+      1030); the loop is now index-based and runs log zero GL messages.
 
 ### Reference to beat, not copy
 
