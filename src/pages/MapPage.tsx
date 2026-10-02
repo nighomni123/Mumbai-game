@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   loadCityMap,
   renderCityMap,
@@ -43,6 +44,17 @@ export default function MapPage() {
   const [size, setSize] = useState({ w: 900, h: 1100 });
   const [pick, setPick] = useState<string | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  /**
+   * Travel by URL, never by calling the world directly: `game.goTo` only
+   * exists once the 3D world is mounted, which it never is on this page. The
+   * old direct call was a silent no-op followed by a reload that dropped the
+   * intent, so clicking a place always landed you at the default spawn. The
+   * world consumes `?to=` on mount.
+   */
+  const travel = (name: string) =>
+    navigate(`/dashboard?to=${encodeURIComponent(name)}`);
 
   useEffect(() => {
     let alive = true;
@@ -80,7 +92,7 @@ export default function MapPage() {
 
   const base = useMemo(
     () =>
-      map
+      map && map.data && map.water
         ? renderCityMap(
             `page-${size.w}x${size.h}`,
             size.w,
@@ -142,8 +154,10 @@ export default function MapPage() {
         <h1 className="display text-2xl">Greater Mumbai</h1>
         <p className="note text-sm opacity-70">
           67 × 82 km ·{" "}
-          {map?.data
-            ? `${map.data.kept.toLocaleString()} road polylines`
+          {map
+            ? map.data
+              ? `${map.data.kept.toLocaleString()} road polylines`
+              : "roads unavailable"
             : "loading…"}{" "}
           ·{" "}
           {map?.water
@@ -173,18 +187,17 @@ export default function MapPage() {
             className="block h-full w-full cursor-pointer"
             onMouseMove={(e) => setPick(at(e))}
             onClick={() => {
-              if (pick) {
-                game.goTo?.(pick);
-                window.location.href = "/dashboard";
-              }
+              if (pick) travel(pick);
             }}
             title="Click a place to travel there"
           />
         ) : (
           <div className="grid h-full place-items-center text-sm opacity-60">
-            {map
-              ? "The land mask has not loaded — run scripts/land-mask.mjs"
-              : "loading the map…"}
+            {!map
+              ? "loading the map…"
+              : !map.data
+                ? "The road map has not loaded — run scripts/citymap.mjs"
+                : "The land mask has not loaded — run scripts/land-mask.mjs"}
           </div>
         )}
       </div>
@@ -193,10 +206,7 @@ export default function MapPage() {
         {pick ? (
           <button
             className="underline decoration-dotted underline-offset-2"
-            onClick={() => {
-              game.goTo?.(pick);
-              window.location.href = "/dashboard";
-            }}
+            onClick={() => travel(pick)}
           >
             travel to {pick}
           </button>

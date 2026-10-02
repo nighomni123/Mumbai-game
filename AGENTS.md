@@ -203,11 +203,11 @@ script says so plainly if it cannot reach the page.
   readout agree. `MumbaiWorld.tsx` exposes it under `import.meta.env.DEV`, the
   same hook `preview.ts` has always had. It is stripped from the build, so this
   only works against `bun run dev`, never a production bundle.
-- **Known finding, NOT yet fixed (confirmed 2026-09-30):** every run logs
-  `GL_INVALID_OPERATION: Vertex buffer is not big enough for the draw call`,
-  repeatedly, on `/dashboard` — something in the scene is drawn with a buffer
-  too small for its draw call. It does not visibly break the frame, but it is
-  a real error and is in every "problems" list the harness prints.
+- **Fixed (2026-10-02):** the harness used to log
+  `GL_INVALID_OPERATION: Vertex buffer is not big enough for the draw call`
+  repeatedly — it came from the *station* world's tactile-dots mesh (capacity
+  1028, drawn 1030), not the city. The loop is now index-based; runs are
+  error-free and the error is gone from every "problems" list.
 - The harness's own capture taxes the game: it reported **~9 fps** average, but
   that is a headed-Chromium-under-automation number, not a verdict on the
   engine. Measure real performance in your own browser before optimising

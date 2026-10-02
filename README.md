@@ -343,10 +343,11 @@ production bundle.
 `bun scripts/shot-fly.mjs` is a smaller scratch harness that screenshots the
 admin-power toggle in both states.
 
-**Known issue:** every run logs
+**Fixed:** runs used to log
 `GL_INVALID_OPERATION: Vertex buffer is not big enough for the draw call`
-repeatedly on `/dashboard`. It does not visibly break the frame, but it is a
-real error.
+repeatedly on `/station` (the tactile-dots instanced mesh declared capacity for
+1028 instances but drew 1030). The dots loop is now index-based and the run is
+error-free.
 
 The harness's own capture taxes the game (~9 fps average under
 headed-Chromium-under-automation). That is not a verdict on the engine —

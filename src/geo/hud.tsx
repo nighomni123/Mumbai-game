@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { game, SPEED_MIN, SPEED_MAX, RENDER_MIN, RENDER_MAX, type Toast } from "./bridge";
+import { game, isTyping, SPEED_MIN, SPEED_MAX, RENDER_MIN, RENDER_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
   renderPlayableMap,
@@ -75,10 +75,7 @@ function SearchBar() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing =
-        e.target instanceof HTMLElement &&
-        (e.target.tagName === "INPUT" || e.target.isContentEditable);
-      if (e.code === "Slash" && !typing) {
+      if (e.code === "Slash" && !isTyping()) {
         e.preventDefault();
         setOpen((v) => !v);
       }
@@ -259,6 +256,10 @@ function Minimap({ map }: { map: CityMap }) {
     setHover(name);
     if (name) game.goTo?.(name);
   };
+  // Hover only labels. Travel belongs to the click alone — binding goTo here
+  // too meant brushing the mouse across the minimap teleported the player
+  // across the city, unasked, once per place crossed.
+  const hoverAt = (e: React.MouseEvent<HTMLCanvasElement>) => setHover(at(e));
 
   return (
     <div
@@ -269,7 +270,7 @@ function Minimap({ map }: { map: CityMap }) {
         ref={ref}
         width={MM_W}
         height={MM_H}
-        onMouseMove={pick}
+        onMouseMove={hoverAt}
         onClick={pick}
         className="sketch-soft block w-full cursor-pointer"
         title="Click a place to travel there"
@@ -396,7 +397,7 @@ export function CityHud() {
   // something a visitor should trip over while trying to walk to Kala Ghoda.
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      if (ev.code === "KeyG") setShowEnrich((v) => !v);
+      if (ev.code === "KeyG" && !isTyping()) setShowEnrich((v) => !v);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -419,11 +420,18 @@ export function CityHud() {
         wasFly = game.fly;
         setFly(game.fly);
       }
-      // The map arrives once. A ref, not `map` in the dep list: this effect
-      // must run once for the lifetime of the HUD, and reading a changing
-      // `map` from inside the rAF loop would need it as a dependency and would
-      // then re-subscribe on every load.
-      if (game.map && !mapRef.current) {
+      // The map arrives TWICE, not once: `shareMap` in world.ts publishes as
+      // soon as the water mask lands, and again when citymap.json lands. The
+      // water mask is the larger file (896 KB vs 444 KB) so it sometimes wins,
+      // and the first publish carries `data: null` — no roads.
+      //
+      // This used to latch on `!mapRef.current`, i.e. take the FIRST non-null
+      // and never look again, so whenever water won the race the minimap was
+      // permanently stuck drawing land and sea with no road network at all.
+      // Compare against the last object instead, so the second publish lands.
+      // Still a ref and still one subscription for the HUD's lifetime:
+      // `shareMap` only runs on load, so this cannot re-render in a loop.
+      if (game.map && game.map !== mapRef.current) {
         mapRef.current = game.map;
         setMap(game.map);
       }

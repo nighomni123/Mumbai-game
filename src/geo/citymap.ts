@@ -329,6 +329,14 @@ export function renderPlayableMap(
   if (hit) return hit;
   if (!water) return null;
 
+  // Deliberately NOT caching a render that had no road data. The water mask
+  // and the city map load independently, so this can run first with
+  // `data === null` — land and sea, no roads. Caching that under a key that
+  // says nothing about the data means the later, correct call gets handed the
+  // road-less bitmap for the rest of the session. Only a complete render is
+  // worth keeping.
+  const cacheable = !!data;
+
   const cv = document.createElement("canvas");
   cv.width = Math.max(2, Math.round(w * scale));
   cv.height = Math.max(2, Math.round(h * scale));
@@ -381,7 +389,7 @@ export function renderPlayableMap(
     }
     g.stroke();
   }
-  cache.set(key, cv);
+  if (cacheable) cache.set(key, cv);
   return cv;
 }
 

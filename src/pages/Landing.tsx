@@ -118,7 +118,7 @@ export default function Landing() {
               <Link to="/dashboard">walk in</Link>
             </Button>
             <Button asChild className="note gap-1.5 text-base ink-shadow">
-              <Link to="/dashboard">
+              <Link to="/map">
                 open the map <ArrowRight className="size-4" />
               </Link>
             </Button>
@@ -178,10 +178,10 @@ export default function Landing() {
                 variant="outline"
                 className="note gap-2 text-lg"
               >
-                <Link to="/dashboard">
+                <a href="#how">
                   <PenLine className="size-4" />
-                  I have an account
-                </Link>
+                  how to play
+                </a>
               </Button>
             </div>
 
@@ -391,7 +391,7 @@ export default function Landing() {
             <div className="mt-8 flex flex-wrap items-center justify-center gap-4">
               <Button asChild size="lg" className="note gap-2 text-lg ink-shadow">
                 <Link to="/dashboard">
-                  walk the platform <ArrowRight className="size-5" />
+                  start walking <ArrowRight className="size-5" />
                 </Link>
               </Button>
               <Button
@@ -400,7 +400,7 @@ export default function Landing() {
                 variant="outline"
                 className="note text-lg"
               >
-                <Link to="/dashboard">walk the platform</Link>
+                <Link to="/station">walk the platform</Link>
               </Button>
             </div>
           </div>
@@ -414,10 +414,7 @@ export default function Landing() {
             drawn live in your browser · no assets harmed
           </p>
           <p className="note text-sm text-muted-foreground/80">
-            — western line · charni road ·{" "}
-            <Link to="/dashboard" className="underline decoration-dotted underline-offset-4 hover:text-foreground">
-              sign in
-            </Link>
+            — western line · charni road
           </p>
         </div>
       </footer>

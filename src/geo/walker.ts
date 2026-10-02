@@ -27,7 +27,7 @@
  */
 
 import * as THREE from "three";
-import { game, SPEED_MIN, SPEED_MAX } from "./bridge.js";
+import { game, isTyping, SPEED_MIN, SPEED_MAX } from "./bridge.js";
 import { PLACES } from "./places.js";
 import { toLocal } from "./geo-constants.js";
 import type { GeoCity } from "./GeoCity.js";
@@ -145,6 +145,9 @@ export class Walker {
   attach(): () => void {
     const el = this.dom;
     const onKeyDown = (e: KeyboardEvent) => {
+      // Typing in the Go-to palette owns these keys; keyup stays unguarded so
+      // a key held before focusing the field is still released.
+      if (isTyping()) return;
       if (e.code === "Escape") {
         game.playing = false;
         if (document.pointerLockElement === el) document.exitPointerLock();

@@ -154,3 +154,21 @@ export const game = {
 export function toast(title: string, text: string): void {
   game.toast = { id: ++game.seq, title, text };
 }
+
+/**
+ * True while a text field has focus — the world must not react to keys.
+ *
+ * Every key handler in the geo world checks this. Without it, typing a
+ * destination that starts with P opened the planet overlay mid-word and
+ * unmounted the palette, holding a letter walked the player, Space was
+ * swallowed out of queries (and every second space silently toggled flight),
+ * and G opened the QA panel behind the palette. One helper on the seam all
+ * three handlers already import, rather than three copies of the same check.
+ */
+export function isTyping(): boolean {
+  const el = document.activeElement;
+  return (
+    el instanceof HTMLElement &&
+    (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)
+  );
+}
