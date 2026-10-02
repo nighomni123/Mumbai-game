@@ -1,6 +1,8 @@
 /**
  * Runnable check for the admin-power (Minecraft-creative) flight, and for the
- * geo city's speed option, which scales the same three constants.
+ * geo city's two HUD sliders — the speed option, which scales the same three
+ * constants, and the render-distance option, which decides how much of the city
+ * is streamed at all.
  *
  * Runs the real `Player` and `Walker` classes headlessly: a
  * `PerspectiveCamera` is pure maths in three.js, and `update()` only ever
@@ -22,6 +24,8 @@ import { L } from "../src/mumbai/layout.ts";
 import { Walker } from "../src/geo/walker.ts";
 import { game as geoGame } from "../src/geo/bridge.ts";
 import { METRO_BOUNDS } from "../src/geo/geo-constants.ts";
+import { GeoCity, MAX_RENDER_DISTANCE, MIN_RENDER_DISTANCE } from "../src/geo/GeoCity.ts";
+import { RENDER_MIN } from "../src/geo/bridge.ts";
 
 const DT = 1 / 60;
 let failed = 0;
@@ -352,6 +356,123 @@ ok("Z released is back to the slider's own speed",
   ok("the slab was actually tested, not ignored", geoGame.near > 0,
     `${geoGame.near} footprints tested`);
 }
+
+console.log("render distance — the HUD slider");
+
+/**
+ * A camera on a footpath looking along the street, which is the view the
+ * slider is tuned for. The far plane is the world's own 9 km — set shorter than
+ * the distances under test and the frustum culls everything before the render
+ * distance gets a say, which reads as "the slider does nothing".
+ * `updateMatrixWorld` refreshes `matrixWorldInverse` for us (three's Camera
+ * does it in the override), which `frustumHitsTile` reads.
+ */
+function cityAt(x, z) {
+  const scene = new THREE.Scene();
+  const cam = new THREE.PerspectiveCamera(55, 1.6, 1, 9000);
+  cam.position.set(x, 1.7, z);
+  cam.lookAt(x, 1.7, z - 100);
+  cam.updateMatrixWorld(true);
+  return new GeoCity(scene, cam, { maxDistance: 2600 });
+}
+
+/**
+ * Tiles this distance would actually stream: the square ring `loadRadius`
+ * allows, cut down by the per-tile frustum + distance cull. This is the load
+ * the slider is really moving, and every resident chunk is one more merged mesh
+ * in the draw call.
+ */
+function tilesInRange(city, scale) {
+  const dist = 2600 * scale;
+  city.setMaxDistance(dist);
+  const cam = /** @type {any} */ (city).camera;
+  const r = /** @type {any} */ (city).loadRadius;
+  let n = 0;
+  for (let dx = -r; dx <= r; dx++) {
+    for (let dz = -r; dz <= r; dz++) {
+      if (city.frustumHitsTile(`${dx},${dz}`)) n++;
+    }
+  }
+  return { dist: Math.round(dist), ring: (2 * r + 1) ** 2, tiles: n };
+}
+
+const fort = cityAt(0, 0);
+{
+  const at1 = tilesInRange(fort, 1);
+  const low = tilesInRange(fort, 0.3);
+
+  ok("1x is the automatic 2.6 km", at1.dist === 2600, `${at1.dist} m`);
+  ok("lowering it lowers the render distance", low.dist < at1.dist,
+    `${at1.dist} m -> ${low.dist} m`);
+  ok("and it actually streams fewer tiles, not just a smaller number on screen",
+    low.tiles < at1.tiles, `${at1.tiles} tiles -> ${low.tiles}`);
+  ok("fewer candidate tiles too, so less is fetched than discarded",
+    low.ring < at1.ring, `${at1.ring}-tile ring -> ${low.ring}`);
+
+  // The direction that matters most: every step down must keep helping. If the
+  // floor stopped reducing the ring, the bottom half of the slider would be a
+  // dead control that only makes the world uglier.
+  let prev = Infinity;
+  let monotone = true;
+  for (const s of [1, 0.8, 0.6, 0.4, 0.2]) {
+    const t = tilesInRange(fort, s).tiles;
+    if (t > prev) monotone = false;
+    prev = t;
+  }
+  ok("fewer distance means fewer tiles at every step, down to the floor",
+    monotone && prev < tilesInRange(fort, 1).tiles, `floor ${prev} tiles`);
+
+  // A hand-set value cannot strand the player in fog. Clamped at the read, the
+  // same way speedMul is.
+  fort.setMaxDistance(1e9);
+  ok("a hand-set absurd distance is clamped to the hard ceiling",
+    fort.renderDistance <= MAX_RENDER_DISTANCE, `${fort.renderDistance} m`);
+  fort.setMaxDistance(-5);
+  ok("and a negative one is clamped up to a usable floor",
+    fort.renderDistance >= MIN_RENDER_DISTANCE, `${fort.renderDistance} m`);
+
+  // The bug this whole section exists to catch: a floor above the slider's own
+  // bottom makes the lower half of the control a dead zone. It reads as a broken
+  // slider and is the one failure mode of this feature that looks like nothing
+  // happening rather than something happening wrongly.
+  const lowest = tilesInRange(fort, RENDER_MIN);
+  ok("the bottom of the slider is live, not clamped flat",
+    lowest.dist > MIN_RENDER_DISTANCE && lowest.tiles < at1.tiles,
+    `x${RENDER_MIN} -> ${lowest.dist} m, ${lowest.tiles} tiles (floor ${MIN_RENDER_DISTANCE} m)`);
+}
+
+/**
+ * The rate-limited convergence in world.ts, replayed as the pure arithmetic it
+ * is. It used to step an unclamped 250 m and never test whether it had arrived,
+ * so the render distance oscillated either side of its target indefinitely —
+ * visible as a HUD readout that will not settle, and worst at the slider floor,
+ * which the slider can now actually reach.
+ */
+{
+  const settle = (from, want, steps = 60) => {
+    let cur = from;
+    const seen = [];
+    for (let i = 0; i < steps; i++) {
+      if (cur !== want)
+        cur = cur < want ? Math.min(cur + 250, want) : Math.max(cur - 250, want);
+      seen.push(cur);
+    }
+    return seen;
+  };
+  const atRest = settle(2600, 2600);
+  ok("sitting still at the default does not drift off its own target",
+    atRest.every((v) => v === 2600), `settled at ${atRest.at(-1)} m`);
+
+  const dropped = settle(2600, 520);
+  ok("dropping to a lower target lands on it exactly, once",
+    dropped.at(-1) === 520 && new Set(dropped.slice(-6)).size === 1,
+    `last six frames: ${dropped.slice(-6).join(", ")}`);
+
+  const climbed = settle(2600, 5100);
+  ok("and climbing lands on it too", climbed.at(-1) === 5100,
+    `settled at ${climbed.at(-1)} m`);
+}
+fort.dispose();
 
 console.log(failed ? `\n${failed} failing` : "\nall green");
 process.exit(failed ? 1 : 0);

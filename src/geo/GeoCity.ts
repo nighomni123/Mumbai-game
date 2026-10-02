@@ -116,6 +116,18 @@ function roadQuad(
 /** Hard ceiling on how far geometry is ever drawn, whatever the altitude. */
 export const MAX_RENDER_DISTANCE = 9000;
 
+/**
+ * The floor, and the reason the HUD render-distance slider is honest.
+ *
+ * This used to be 1200 m, which is a reasonable floor but a broken slider
+ * minimum: 1200 / WALK_DISTANCE is 0.46, so every setting below 0.46x was a
+ * dead zone that read as "the slider does nothing" while changing nothing at
+ * all. Kept low enough that the bottom of the control is live — one block, the
+ * street, the skyline — which is the point on a machine that cannot hold frame
+ * rate at full distance.
+ */
+export const MIN_RENDER_DISTANCE = 350;
+
 export class GeoCity {
   private scene: THREE.Scene;
   private chunks: Map<string, ChunkEntry>;
@@ -198,7 +210,10 @@ export class GeoCity {
    * without the player ever seeing a number or a setting.
    */
   setMaxDistance(metres: number): void {
-    const clamped = Math.max(1200, Math.min(MAX_RENDER_DISTANCE, metres));
+    const clamped = Math.max(
+      MIN_RENDER_DISTANCE,
+      Math.min(MAX_RENDER_DISTANCE, metres),
+    );
     if (clamped === this.maxDistance) return;
     this.maxDistance = clamped;
     // Keep the ring just wide enough to cover the budget, and never wider: a

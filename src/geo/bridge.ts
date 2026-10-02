@@ -30,6 +30,25 @@ export const SPEED_MIN = 1;
 export const SPEED_MAX = 10;
 export const SPEED_DEFAULT = 3;
 
+/**
+ * The render-distance slider, as a multiplier on the altitude-driven budget.
+ *
+ * A scale rather than an absolute metre figure, because the distance is
+ * computed from altitude every frame: an absolute slider would be a dead
+ * control at ground level (the automatic value is already 2.6 km, so dragging
+ * past it does nothing) and a lie while flying (2.6 km means nothing at 2 km
+ * up). Scaling keeps the shape of the world intact and only spends fewer or
+ * more pixels on it.
+ *
+ * 1 is exactly the automatic behaviour, so the default is a no-op rather than
+ * a new thing to tune. Below 1 the win is steep because resident chunks scale
+ * with area, not radius: at 0.3x the ring drops from 49 candidate tiles to 25
+ * and the distance cull trims those to the handful actually on screen.
+ */
+export const RENDER_MIN = 0.2;
+export const RENDER_MAX = 2;
+export const RENDER_DEFAULT = 1;
+
 export const game = {
   /** Input captured and the player is on foot. */
   playing: false,
@@ -45,6 +64,12 @@ export const game = {
    * at the read, so a stale or hand-set value cannot make the city unplayable.
    */
   speedMul: SPEED_DEFAULT,
+  /**
+   * Render-distance multiplier, written by the HUD slider and read by the render
+   * loop every frame. Clamped to [RENDER_MIN, RENDER_MAX] at the read so a
+   * stale or hand-set value cannot strand the player in fog.
+   */
+  renderScale: RENDER_DEFAULT,
   /** Live player transform in local metres, written every frame. */
   x: 0,
   y: 0,

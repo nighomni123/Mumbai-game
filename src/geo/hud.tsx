@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { game, SPEED_MIN, SPEED_MAX, type Toast } from "./bridge";
+import { game, SPEED_MIN, SPEED_MAX, RENDER_MIN, RENDER_MAX, type Toast } from "./bridge";
 import { toWgs84 } from "./geo-constants.js";
 import {
   renderPlayableMap,
@@ -324,6 +324,51 @@ function SpeedControl() {
 }
 
 /**
+ * The render-distance option.
+ *
+ * The lever for "this machine is not hitting frame rate". Lowering it is the
+ * single biggest thing available to the player: resident chunks scale with the
+ * area covered, so halving the distance roughly quarters the geometry, the
+ * fetch cost and the shadow pass at once. It scales the altitude-driven budget
+ * rather than replacing it, so on foot it stays tight and while flying it still
+ * opens out — the slider changes how much of the world is built, not the shape
+ * of it.
+ *
+ * `game.renderDistance` is the live result the render loop actually settled on,
+ * so the metre figure under the thumb is the truth rather than a prediction —
+ * at 1x on foot it reads 2.6 km, and it climbs as you gain altitude.
+ */
+function RenderControl() {
+  const [scale, setScale] = useState(game.renderScale);
+  const metres = Math.round(game.renderDistance);
+  return (
+    <div className="mt-2 border-t border-foreground/30 pt-2">
+      <div className="flex justify-between text-xs">
+        <span className="opacity-60">render distance</span>
+        <span className="note">
+          ×{scale.toFixed(2)} · {metres >= 1000 ? `${(metres / 1000).toFixed(1)} km` : `${metres} m`}
+        </span>
+      </div>
+      <Slider
+        value={[scale]}
+        min={RENDER_MIN}
+        max={RENDER_MAX}
+        step={0.05}
+        aria-label="render distance multiplier — lower it for a higher frame rate"
+        onValueChange={([v]) => {
+          setScale(v);
+          game.renderScale = v;
+        }}
+        className="mt-1.5"
+      />
+      <div className="mt-1 text-[10px] opacity-60">
+        lower draws less city and buys frames — 1× is automatic
+      </div>
+    </div>
+  );
+}
+
+/**
  * The overlay for the real city.
  *
  * Polls the plain `game` bridge on requestAnimationFrame rather than
@@ -455,6 +500,7 @@ export function CityHud() {
           </button>
         )}
         {!planet && <SpeedControl />}
+        {!planet && <RenderControl />}
       </Card>
 
       {!planet && !playing && game.ready && (
