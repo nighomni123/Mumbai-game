@@ -235,7 +235,13 @@ export function mountCity(container: HTMLElement): CityHandle {
     shareMap();
   });
   const shareMap = () => {
-    if (water) {
+    // Only publish a COMPLETE map. The water mask (896 KB) and citymap.json
+    // (444 KB) load independently, so either can win, and publishing early
+    // handed the HUD a `{ data: null }` map — land and sea, no roads. The HUD
+    // took that as the map and the minimap lost its road network for the rest
+    // of the session. Waiting costs the minimap its first second; publishing a
+    // map that is missing its roads costs it the feature.
+    if (water && mapData) {
       game.map = { data: mapData, water };
       mapOverlay?.setMap(game.map);
     }

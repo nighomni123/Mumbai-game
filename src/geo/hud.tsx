@@ -419,11 +419,18 @@ export function CityHud() {
         wasFly = game.fly;
         setFly(game.fly);
       }
-      // The map arrives once. A ref, not `map` in the dep list: this effect
-      // must run once for the lifetime of the HUD, and reading a changing
-      // `map` from inside the rAF loop would need it as a dependency and would
-      // then re-subscribe on every load.
-      if (game.map && !mapRef.current) {
+      // The map arrives TWICE, not once: `shareMap` in world.ts publishes as
+      // soon as the water mask lands, and again when citymap.json lands. The
+      // water mask is the larger file (896 KB vs 444 KB) so it sometimes wins,
+      // and the first publish carries `data: null` — no roads.
+      //
+      // This used to latch on `!mapRef.current`, i.e. take the FIRST non-null
+      // and never look again, so whenever water won the race the minimap was
+      // permanently stuck drawing land and sea with no road network at all.
+      // Compare against the last object instead, so the second publish lands.
+      // Still a ref and still one subscription for the HUD's lifetime:
+      // `shareMap` only runs on load, so this cannot re-render in a loop.
+      if (game.map && game.map !== mapRef.current) {
         mapRef.current = game.map;
         setMap(game.map);
       }
