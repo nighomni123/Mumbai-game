@@ -32,7 +32,13 @@ import {
 } from "./water.js";
 import { loadCityMap, type CityMapData } from "./citymap.js";
 import { MapOverlay } from "./map-overlay.js";
-import { game, toast, type WorldMode } from "./bridge.js";
+import {
+  game,
+  toast,
+  RENDER_MIN,
+  RENDER_MAX,
+  type WorldMode,
+} from "./bridge.js";
 
 export interface CityHandle {
   teardown(): void;
@@ -95,7 +101,21 @@ export function mountCity(container: HTMLElement): CityHandle {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
-  renderer.shadowMap.enabled = true;
+
+  /**
+   * DEV LIGHTING — development runs flat, production runs lit.
+   *
+   * `?lit=1` puts the full rig back on inside a dev build, so a lighting
+   * change can still be judged without a production build.
+   *
+   * What it buys: the shadow map is a second full geometry pass over every
+   * resident chunk, and it also drives `castShadow`/`receiveShadow` bookkeeping
+   * on each mesh. Dropping it removes that pass entirely. The hemisphere fill
+   * goes too — it is what flattens the toon banding, so a dev frame reads as
+   * flat colour per face, which is what you want while placing geometry.
+   */
+  const FLATLIT = import.meta.env.DEV && !new URLSearchParams(location.search).has("lit");
+  renderer.shadowMap.enabled = !FLATLIT;
   renderer.shadowMap.type = THREE.PCFShadowMap;
 
   const scene = new THREE.Scene();
@@ -109,7 +129,9 @@ export function mountCity(container: HTMLElement): CityHandle {
   // cream, no palette change will ever be visible and the experiment would be
   // misread as "the palette was fine". Struck out of the build by `import.meta.env.DEV`.
   const NOGRADE = import.meta.env.DEV && new URLSearchParams(location.search).has("nograde");
-  scene.fog = NOGRADE ? new THREE.Fog(PAL.fog, 1e7, 2e7) : new THREE.Fog(PAL.fog, 600, 3600);
+  scene.fog = NOGRADE
+    ? new THREE.Fog(PAL.fog, 1e7, 2e7)
+    : new THREE.Fog(PAL.fog, 600 * renderScale(), 3600 * renderScale());
   // The sky dome must FOLLOW THE CAMERA.
   //
   // It was parented to the origin with a fixed 3,200 m radius, while the world
@@ -126,20 +148,26 @@ export function mountCity(container: HTMLElement): CityHandle {
   // is worth far more than distant detail nobody can see.
   const sun = new THREE.DirectionalLight(PAL.sun, 2.1);
   sun.position.set(-600, 700, 400);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const sc = sun.shadow.camera;
-  sc.left = -420;
-  sc.right = 420;
-  sc.top = 420;
-  sc.bottom = -420;
-  sc.near = 1;
-  sc.far = 2200;
-  sun.shadow.bias = -0.0006;
-  sun.shadow.normalBias = 0.4;
+  sun.castShadow = !FLATLIT;
+  if (!FLATLIT) {
+    sun.shadow.mapSize.set(2048, 2048);
+    const sc = sun.shadow.camera;
+    sc.left = -420;
+    sc.right = 420;
+    sc.top = 420;
+    sc.bottom = -420;
+    sc.near = 1;
+    sc.far = 2200;
+    sun.shadow.bias = -0.0006;
+    sun.shadow.normalBias = 0.4;
+  }
   scene.add(sun, sun.target);
-  scene.add(new THREE.HemisphereLight(PAL.skyHaze, PAL.shadowFill, 0.75));
-  scene.add(new THREE.AmbientLight(PAL.fog, NOGRADE ? 0.02 : 0.28));
+  // Hemisphere fill is part of the lit rig only: it is what washes the toon
+  // banding flat, so leaving it in would defeat the point of FLATLIT.
+  if (!FLATLIT) scene.add(new THREE.HemisphereLight(PAL.skyHaze, PAL.shadowFill, 0.75));
+  scene.add(
+    new THREE.AmbientLight(PAL.fog, FLATLIT ? 0.62 : NOGRADE ? 0.02 : 0.28),
+  );
 
   const camera = new THREE.PerspectiveCamera(55, 1, 1, 9000);
   camera.position.set(0, EYE_HINT, 0);
@@ -363,8 +391,10 @@ export function mountCity(container: HTMLElement): CityHandle {
       // streaming, no sun chase, no build queue. Pressing P costs nothing.
       mapOverlay?.tick();
     } else {
-      scene.fog = NOGRADE ? new THREE.Fog(PAL.fog, 1e7, 2e7) : new THREE.Fog(PAL.fog, 600, 3600);
-      sun.castShadow = true;
+      scene.fog = NOGRADE
+        ? new THREE.Fog(PAL.fog, 1e7, 2e7)
+        : new THREE.Fog(PAL.fog, 600 * renderScale(), 3600 * renderScale());
+      sun.castShadow = !FLATLIT;
       walker.update(dt);
       const cx = game.x;
       const cz = game.z;
@@ -374,13 +404,22 @@ export function mountCity(container: HTMLElement): CityHandle {
       // whole ring and the resident set chatters.
       const alt = Math.max(0, game.y - EYE_HINT);
       const want =
-        alt < 30
+        (alt < 30
           ? WALK_DISTANCE
-          : Math.min(CLIMB_HEADROOM, WALK_DISTANCE + alt * 2.2);
-      const drift = want > city.renderDistance ? 0 : -250;
-      city.setMaxDistance(
-        city.renderDistance + drift + (want > city.renderDistance ? 250 : 0),
-      );
+          : Math.min(CLIMB_HEADROOM, WALK_DISTANCE + alt * 2.2)) *
+        renderScale();
+      // Rate-limited to `want`, and it must LAND on it rather than step over it.
+      // This used to be an unclamped +/-250 step that ran even once the two were
+      // equal, so the distance oscillated either side of its target for as long
+      // as you stood still — 2600 <-> 2350 at the default, and with the slider
+      // at its floor, 350 <-> 600. That reads as a slider that will not settle
+      // and makes the readout flicker. Clamping the last step is the whole fix.
+      const cur = city.renderDistance;
+      if (cur !== want) {
+        city.setMaxDistance(
+          cur < want ? Math.min(cur + 250, want) : Math.max(cur - 250, want),
+        );
+      }
 
       sun.position.set(cx - 500, 620, cz + 360);
       sun.target.position.set(cx, 0, cz);
@@ -392,8 +431,14 @@ export function mountCity(container: HTMLElement): CityHandle {
       sky.clouds.position.set(camera.position.x, 0, camera.position.z);
       // Only the near ring casts. A shadow map that re-renders every resident
       // chunk every frame is a second full geometry pass for shadows nobody at
-      // this distance can resolve.
-      city.setShadowDistance(WALK_DISTANCE);
+      // this distance can resolve. Skipped entirely when flat-lit. Tracks the
+      // slider so turning the distance down really does buy frame time rather
+      // than just moving the shadow pass somewhere else, and never exceeds the
+      // distance budget — a shadow cast past the render edge is invisible.
+      if (!FLATLIT)
+        city.setShadowDistance(
+          Math.min(WALK_DISTANCE * renderScale(), city.renderDistance),
+        );
       city.ensureAround(cx, cz);
       // A bigger slice when there is a backlog: 4 ms/frame can never catch up
       // after a teleport, and the player is looking at holes.
@@ -677,5 +722,18 @@ const EYE_HINT = 1.7;
  */
 const WALK_DISTANCE = 2600;
 const CLIMB_HEADROOM = 6000;
+
+/**
+ * The HUD slider's value, clamped at the read.
+ *
+ * Clamped here rather than only in the slider for the same reason `speedMul`
+ * is: the bridge is a plain mutable object that devtools can poke, and a render
+ * distance of 3 km from a stale write is fog with no city in it. A function
+ * declaration so the fog set-up near the top of `mount` can call it too — it
+ * hoists, and the alternative is reading an uninitialised `const`.
+ */
+function renderScale(): number {
+  return Math.max(RENDER_MIN, Math.min(RENDER_MAX, game.renderScale));
+}
 
 export type { WaterData, WorldMode };
