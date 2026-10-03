@@ -13,7 +13,7 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { landRuns, projectorFor } from "../src/geo/citymap-math.js";
-import { METRO_BOUNDS, toLocal } from "./geo.mjs";
+import { METRO_BOUNDS, DEV_BOUNDS, toLocal } from "./geo.mjs";
 import { VALIDATION_SITES } from "./validation-sites.mjs";
 
 let failures = 0;
@@ -83,6 +83,51 @@ const p = projectorFor(METRO_BOUNDS, W, H);
   const probe = 12345;
   ok(Math.abs(p.invX(p.x(probe)) - probe) < 1e-6, "invX undoes x");
   ok(Math.abs(p.invY(p.y(probe)) - probe) < 1e-6, "invY undoes y");
+}
+
+console.log("the minimap can actually see the roads");
+// The projector block above tests METRO_BOUNDS, which is the /map page. The
+// HUD minimap uses a DIFFERENT one — playableProjector over DEV_BOUNDS — and
+// nothing checked that the road network survives it. A minimap whose viewport
+// misses the roads draws land and sea perfectly and looks like a finished
+// product, which is exactly how the road network went missing on 2026-10-02.
+// This is the headless half of that guard: it catches a viewport that no longer
+// contains the city. It CANNOT catch the render side — a map published with
+// `data: null`, or a cache that keeps a road-less bitmap — because those need
+// a browser and a canvas.
+{
+  const MM_W = 224, MM_H = 326, SCALE = 4;
+  const pv = projectorFor(DEV_BOUNDS, MM_W * SCALE, MM_H * SCALE);
+  const q = map.q ?? 1;
+  let onCanvas = 0;
+  for (const flat of map.roads) {
+    let hit = false;
+    for (let i = 0; i < flat.length && !hit; i += 2) {
+      const px = pv.x(flat[i] * q), py = pv.y(flat[i + 1] * q);
+      if (px >= 0 && px <= MM_W * SCALE && py >= 0 && py <= MM_H * SCALE) hit = true;
+    }
+    if (hit) onCanvas++;
+  }
+  const share = onCanvas / map.roads.length;
+  ok(
+    share > 0.15,
+    `roads land inside the minimap viewport (${onCanvas}/${map.roads.length} = ${(share * 100).toFixed(1)}%, need >15%)`,
+  );
+  // The named arterials are drawn thicker than the network; if they are the
+  // only roads on the canvas the viewport is roughly right, and if none are,
+  // the whole thing is off screen and the check above passed by luck.
+  const namedOn = (map.named ?? []).filter((r) => {
+    const f = r.p;
+    for (let i = 0; i < f.length; i += 2) {
+      const px = pv.x(f[i] * q), py = pv.y(f[i + 1] * q);
+      if (px >= 0 && px <= MM_W * SCALE && py >= 0 && py <= MM_H * SCALE) return true;
+    }
+    return false;
+  }).length;
+  ok(
+    namedOn > 0,
+    `a named arterial is on the minimap (${namedOn} of ${(map.named ?? []).length})`,
+  );
 }
 
 console.log("the map covers the city the world covers");
